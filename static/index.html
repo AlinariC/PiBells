@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PiBells Schedule</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Bell Schedule</h1>
+  <form id="add-form">
+    <label>Date/time: <input type="datetime-local" id="time" required></label>
+    <label>Sound file: <input type="text" id="sound" placeholder="bell.mp3" required></label>
+    <button type="submit">Add</button>
+  </form>
+  <table id="schedule">
+    <thead><tr><th>Time</th><th>Sound</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+<script>
+async function loadSchedule() {
+  const res = await fetch('/api/schedule');
+  const data = await res.json();
+  const tbody = document.querySelector('#schedule tbody');
+  tbody.innerHTML = '';
+  data.forEach((item, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${new Date(item.time).toLocaleString()}</td><td>${item.sound_file}</td>`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Delete';
+    btn.onclick = async () => {
+      await fetch('/api/schedule/' + i, { method: 'DELETE' });
+      loadSchedule();
+    };
+    const td = document.createElement('td');
+    td.appendChild(btn);
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById('add-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const time = document.getElementById('time').value;
+  const sound = document.getElementById('sound').value;
+  await fetch('/api/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ time, sound_file: sound })
+  });
+  e.target.reset();
+  loadSchedule();
+};
+
+loadSchedule();
+</script>
+</body>
+</html>
