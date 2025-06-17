@@ -15,9 +15,11 @@ SCHEDULE_FILE = Path("schedule.json")
 DEVICES_FILE = Path("devices.json")
 AUDIO_DIR = Path("audio")
 AUDIO_DIR.mkdir(exist_ok=True)
+STATIC_DIR = Path("static")
 
 app = FastAPI()
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 class ScheduleEntry(BaseModel):
     time: datetime
