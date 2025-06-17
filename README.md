@@ -13,14 +13,14 @@ A lightweight bell scheduling server using FastAPI. The web interface lets you p
 Start the server with:
 
 ```bash
-uvicorn app.main:app --reload
+sudo uvicorn app.main:app --host 0.0.0.0 --port 80 --reload
 ```
 
-Open your browser at `http://localhost:8000` to manage the schedule.
+Open your browser at `http://<server-ip>/` to manage the schedule.
 
 Bell schedules are stored in `schedule.json`. Multiple schedules can be created and the active one is chosen from the web interface. The server polls this file every 30 seconds and triggers the configured devices for the active schedule.
 
-Device IPs are stored in `devices.json` and can be managed from the admin page at `http://localhost:8000/admin`.
+Device IPs are stored in `devices.json` and can be managed from the admin page at `http://<server-ip>/admin`.
 
 Audio files used for bells can be uploaded from the admin page as well. Uploaded
 files are stored in the `audio/` directory and are selectable when creating
@@ -77,7 +77,7 @@ script are shown below for reference.
    [Service]
    User=pibells
    WorkingDirectory=/home/pibells/PiBells
-   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0
+   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 80
    Restart=always
 
    [Install]
@@ -93,4 +93,4 @@ script are shown below for reference.
    ```
 
 PiBells will now automatically start on boot. Access the web interface at
-`http://<raspberrypi-ip>:8000`.
+`http://<raspberrypi-ip>/`.
