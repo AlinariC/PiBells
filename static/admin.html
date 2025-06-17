@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <title>Device Configuration</title>
-  <style>
-    body { font-family: sans-serif; margin: 40px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-  </style>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <header>
+    <img src="/static/logo.svg" alt="PiBells logo" class="logo" />
+    <a href="/">Back to Schedule</a>
+  </header>
   <h1>Barix Devices</h1>
   <form id="add-form">
     <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
