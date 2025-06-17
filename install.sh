@@ -24,7 +24,7 @@ fi
 
 # install required packages inside the virtual environment
 sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install --upgrade pip
-sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install fastapi uvicorn
+sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install fastapi uvicorn python-multipart
 INSTALL_DIR="$HOME_DIR/PiBells"
 
 if [ -d "$INSTALL_DIR" ]; then
