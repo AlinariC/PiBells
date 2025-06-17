@@ -2,7 +2,7 @@ import json
 import socket
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Dict, List
 from urllib import request, parse
@@ -24,7 +24,8 @@ app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 class ScheduleEntry(BaseModel):
-    time: datetime
+    day: int  # 0=Monday
+    time: dt_time
     sound_file: str
 
 
@@ -143,9 +144,10 @@ def trigger_bell(sound_file: str):
 def bell_daemon():
     while True:
         now = datetime.now().replace(second=0, microsecond=0)
+        weekday = now.weekday()
         events = load_schedule()
         for event in events:
-            if event.time.replace(second=0, microsecond=0) == now:
+            if event.day == weekday and event.time.hour == now.hour and event.time.minute == now.minute:
                 trigger_bell(event.sound_file)
         time.sleep(30)
 
