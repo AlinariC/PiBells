@@ -35,6 +35,9 @@ else
   git clone https://github.com/alinaric/PiBells.git "$INSTALL_DIR"
 fi
 
+# ensure the repository is writable by the target user
+chown -R "$TARGET_USER":"$TARGET_USER" "$INSTALL_DIR"
+
 SERVICE_FILE=/etc/systemd/system/pibells.service
 
 cat > "$SERVICE_FILE" <<SERVICE

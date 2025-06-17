@@ -70,7 +70,13 @@ script are shown below for reference.
    cd ~/PiBells
    ```
 
-3. **Create the service file** `/etc/systemd/system/pibells.service` with the following
+3. **Fix directory permissions** so the `pibells` user can update the repo:
+
+   ```bash
+   sudo chown -R pibells:pibells ~/PiBells
+   ```
+
+4. **Create the service file** `/etc/systemd/system/pibells.service` with the following
    contents:
 
    ```ini
@@ -88,7 +94,7 @@ script are shown below for reference.
    WantedBy=multi-user.target
    ```
 
-4. **Enable and start** the service:
+5. **Enable and start** the service:
 
    ```bash
    sudo systemctl daemon-reload
@@ -96,7 +102,7 @@ script are shown below for reference.
    sudo systemctl start pibells
    ```
 
-5. **Configure nginx** to proxy requests on port 80 to the FastAPI server:
+6. **Configure nginx** to proxy requests on port 80 to the FastAPI server:
 
    ```bash
    sudo cp nginx/pibells.conf /etc/nginx/sites-available/pibells
