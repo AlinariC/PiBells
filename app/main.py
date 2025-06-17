@@ -12,12 +12,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-SCHEDULE_FILE = Path("schedule.json")
-DEVICES_FILE = Path("devices.json")
-BUTTONS_FILE = Path("buttons.json")
-AUDIO_DIR = Path("audio")
+BASE_DIR = Path(__file__).resolve().parent.parent
+SCHEDULE_FILE = BASE_DIR / "schedule.json"
+DEVICES_FILE = BASE_DIR / "devices.json"
+BUTTONS_FILE = BASE_DIR / "buttons.json"
+AUDIO_DIR = BASE_DIR / "audio"
 AUDIO_DIR.mkdir(exist_ok=True)
-STATIC_DIR = Path("static")
+STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI()
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
