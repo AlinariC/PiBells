@@ -1,5 +1,4 @@
 import json
-import os
 import threading
 import time
 from datetime import datetime
@@ -12,7 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 SCHEDULE_FILE = Path("schedule.json")
-DEVICES = ["192.168.1.10", "192.168.1.11"]  # Example Barix device IPs
+DEVICES_FILE = Path("devices.json")
 
 app = FastAPI()
 
@@ -31,8 +30,21 @@ def save_schedule(entries: List[ScheduleEntry]):
     with open(SCHEDULE_FILE, "w") as f:
         json.dump([e.dict() for e in entries], f, default=str)
 
+def load_devices() -> List[str]:
+    if not DEVICES_FILE.exists():
+        return []
+    with open(DEVICES_FILE) as f:
+        return json.load(f)
+
+
+def save_devices(devices: List[str]):
+    with open(DEVICES_FILE, "w") as f:
+        json.dump(devices, f)
+
+
 def trigger_bell(sound_file: str):
-    for device in DEVICES:
+    devices = load_devices()
+    for device in devices:
         url = f"http://{device}/play"  # Example endpoint
         data = parse.urlencode({"file": sound_file}).encode()
         try:
@@ -77,6 +89,38 @@ def delete_schedule(index: int):
     save_schedule(entries)
     return entries
 
+
+class Device(BaseModel):
+    ip: str
+
+
+@app.get("/api/devices", response_model=List[str])
+def get_devices():
+    return load_devices()
+
+
+@app.post("/api/devices", response_model=List[str])
+def add_device(device: Device):
+    devices = load_devices()
+    devices.append(device.ip)
+    save_devices(devices)
+    return devices
+
+
+@app.delete("/api/devices/{index}", response_model=List[str])
+def delete_device(index: int):
+    devices = load_devices()
+    if index < 0 or index >= len(devices):
+        raise HTTPException(status_code=404, detail="Invalid index")
+    devices.pop(index)
+    save_devices(devices)
+    return devices
+
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/admin")
+def admin():
+    return FileResponse("static/admin.html")

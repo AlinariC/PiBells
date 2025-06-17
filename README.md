@@ -17,3 +17,5 @@ uvicorn app.main:app --reload
 Open your browser at `http://localhost:8000` to manage the schedule.
 
 Bell times are stored in `schedule.json`. The server polls this file every 30 seconds and triggers the configured devices.
+
+Device IPs are stored in `devices.json` and can be managed from the admin page at `http://localhost:8000/admin`.
