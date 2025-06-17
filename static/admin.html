@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Device Configuration</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Barix Devices</h1>
+  <form id="add-form">
+    <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
+    <button type="submit">Add</button>
+  </form>
+  <table id="devices">
+    <thead><tr><th>IP</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <script>
+  async function loadDevices() {
+    const res = await fetch('/api/devices');
+    const data = await res.json();
+    const tbody = document.querySelector('#devices tbody');
+    tbody.innerHTML = '';
+    data.forEach((ip, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${ip}</td>`;
+      const btn = document.createElement('button');
+      btn.textContent = 'Delete';
+      btn.onclick = async () => {
+        await fetch('/api/devices/' + i, { method: 'DELETE' });
+        loadDevices();
+      };
+      const td = document.createElement('td');
+      td.appendChild(btn);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('add-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const ip = document.getElementById('ip').value;
+    await fetch('/api/devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip })
+    });
+    e.target.reset();
+    loadDevices();
+  };
+
+  loadDevices();
+  </script>
+</body>
+</html>
