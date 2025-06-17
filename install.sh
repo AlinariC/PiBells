@@ -11,7 +11,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 apt-get update
-apt-get install -y python3 python3-pip python3-venv git libcap2-bin
+apt-get install -y python3 python3-pip python3-venv git nginx
 
 TARGET_USER=${SUDO_USER:-pibells}
 HOME_DIR=$(eval echo "~$TARGET_USER")
@@ -25,7 +25,6 @@ fi
 # install required packages inside the virtual environment
 sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install --upgrade pip
 sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install fastapi uvicorn
-setcap 'cap_net_bind_service=+ep' "$VENV_DIR/bin/python3"
 INSTALL_DIR="$HOME_DIR/PiBells"
 
 if [ -d "$INSTALL_DIR" ]; then
@@ -46,7 +45,7 @@ After=network.target
 [Service]
 User=$TARGET_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV_DIR/bin/uvicorn app.main:app --host 0.0.0.0 --port 80
+ExecStart=$VENV_DIR/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 
 [Install]
@@ -56,5 +55,25 @@ SERVICE
 systemctl daemon-reload
 systemctl enable pibells
 systemctl restart pibells
+
+# configure nginx reverse proxy
+NGINX_CONF=/etc/nginx/sites-available/pibells
+cat > "$NGINX_CONF" <<'NGINX'
+server {
+    listen 80;
+    server_name _;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+NGINX
+
+ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/pibells
+rm -f /etc/nginx/sites-enabled/default
+systemctl restart nginx
 
 echo "PiBells installation complete. Service is running."

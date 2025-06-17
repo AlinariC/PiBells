@@ -13,8 +13,12 @@ A lightweight bell scheduling server using FastAPI. The web interface lets you p
 Start the server with:
 
 ```bash
-sudo uvicorn app.main:app --host 0.0.0.0 --port 80 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+To expose the application on the standard HTTP port configure nginx to
+reverse proxy requests to the FastAPI server. An example configuration is
+provided in `nginx/pibells.conf`.
 
 Open your browser at `http://<server-ip>/` to manage the schedule.
 
@@ -49,11 +53,11 @@ service is then enabled and started so PiBells launches automatically on boot.
 If you prefer to perform these steps manually, the commands executed by the
 script are shown below for reference.
 
-1. **Install dependencies** (FastAPI and Uvicorn) if they are not already present:
+1. **Install dependencies** (FastAPI, Uvicorn and nginx) if they are not already present:
 
    ```bash
    sudo apt update
-   sudo apt install python3 python3-pip python3-venv git -y
+   sudo apt install python3 python3-pip python3-venv git nginx -y
    python3 -m venv ~/pibells-venv
    source ~/pibells-venv/bin/activate
    pip install fastapi uvicorn
@@ -77,7 +81,7 @@ script are shown below for reference.
    [Service]
    User=pibells
    WorkingDirectory=/home/pibells/PiBells
-   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 80
+   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
    Restart=always
 
    [Install]
@@ -92,5 +96,14 @@ script are shown below for reference.
    sudo systemctl start pibells
    ```
 
-PiBells will now automatically start on boot. Access the web interface at
+5. **Configure nginx** to proxy requests on port 80 to the FastAPI server:
+
+   ```bash
+   sudo cp nginx/pibells.conf /etc/nginx/sites-available/pibells
+   sudo ln -sf /etc/nginx/sites-available/pibells /etc/nginx/sites-enabled/pibells
+   sudo rm -f /etc/nginx/sites-enabled/default
+   sudo systemctl restart nginx
+   ```
+
+PiBells will now automatically start on boot and be available via nginx at
 `http://<raspberrypi-ip>/`.
