@@ -19,6 +19,13 @@
     <thead><tr><th>IP</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
+
+  <h2>Audio Files</h2>
+  <form id="upload-form">
+    <input type="file" id="audio-file" accept="audio/*" required>
+    <button type="submit">Upload</button>
+  </form>
+  <ul id="audio-list"></ul>
   <script>
   async function loadDevices() {
     const res = await fetch('/api/devices');
@@ -54,6 +61,30 @@
   };
 
   loadDevices();
+
+  async function loadAudio() {
+    const res = await fetch('/api/audio');
+    const data = await res.json();
+    const list = document.getElementById('audio-list');
+    list.innerHTML = '';
+    data.forEach(name => {
+      const li = document.createElement('li');
+      li.textContent = name;
+      list.appendChild(li);
+    });
+  }
+
+  document.getElementById('upload-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const fileInput = document.getElementById('audio-file');
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    await fetch('/api/audio', { method: 'POST', body: formData });
+    fileInput.value = '';
+    loadAudio();
+  };
+
+  loadAudio();
   </script>
 </body>
 </html>

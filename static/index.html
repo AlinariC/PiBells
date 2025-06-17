@@ -21,7 +21,7 @@
   </div>
   <form id="add-form">
     <label>Date/time: <input type="datetime-local" id="time" required></label>
-    <label>Sound file: <input type="text" id="sound" placeholder="bell.mp3" required></label>
+    <label>Sound file: <select id="sound"></select></label>
     <button type="submit">Add</button>
   </form>
   <table id="schedule">
@@ -64,6 +64,19 @@ async function loadScheduleList() {
   });
 }
 
+async function loadAudio() {
+  const res = await fetch('/api/audio');
+  const data = await res.json();
+  const select = document.getElementById('sound');
+  select.innerHTML = '';
+  data.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+}
+
 document.getElementById('schedule-select').onchange = async (e) => {
   await fetch('/api/schedules/activate/' + encodeURIComponent(e.target.value), { method: 'POST' });
   loadSchedule();
@@ -96,6 +109,7 @@ document.getElementById('add-form').onsubmit = async (e) => {
 };
 
 loadScheduleList();
+loadAudio();
 loadSchedule();
 </script>
 </body>
