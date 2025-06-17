@@ -28,6 +28,26 @@ table {
   margin-top: 20px;
   background: white;
 }
+#schedule-grid {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+.schedule-day {
+  flex: 1;
+  background: white;
+  padding: 10px;
+  border: 1px solid #ccc;
+}
+.schedule-day ul {
+  list-style: none;
+  padding: 0;
+}
+.schedule-day li {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0;
+}
 th, td {
   border: 1px solid #ccc;
   padding: 8px;
