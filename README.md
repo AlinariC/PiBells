@@ -26,20 +26,35 @@ schedule entries.
 
 ## Permanent Installation on a Raspberry Pi 4
 
-To run PiBells automatically at boot, create a systemd service on your Pi:
+PiBells can run automatically at boot using a systemd service. The easiest way
+to set this up is with the provided `install.sh` script. Run the following
+commands on your Pi:
+
+```bash
+git clone https://github.com/alinaric/PiBells.git
+cd PiBells
+sudo ./install.sh
+```
+
+The script installs required packages, clones/updates the repository for the
+`pi` user and creates a `pibells.service` file in `/etc/systemd/system`. The
+service is then enabled and started so PiBells launches automatically on boot.
+
+If you prefer to perform these steps manually, the commands executed by the
+script are shown below for reference.
 
 1. **Install dependencies** (FastAPI and Uvicorn) if they are not already present:
 
    ```bash
    sudo apt update
-   sudo apt install python3 python3-pip -y
+   sudo apt install python3 python3-pip git -y
    pip3 install fastapi uvicorn
    ```
 
 2. **Clone the repository** to the home directory of the `pi` user:
 
    ```bash
-   git clone https://github.com/your-org/PiBells.git ~/PiBells
+   git clone https://github.com/alinaric/PiBells.git ~/PiBells
    cd ~/PiBells
    ```
 
