@@ -20,6 +20,9 @@
     <tbody></tbody>
   </table>
 
+  <h2>Network</h2>
+  <p id="ip-display"></p>
+
   <h2>Audio Files</h2>
   <form id="upload-form">
     <input type="file" id="audio-file" accept="audio/*" required>
@@ -31,6 +34,13 @@
   <label>Sound file: <select id="test-sound"></select></label>
   <button id="test-play">Play</button>
   <script>
+  async function loadNetwork() {
+    const res = await fetch('/api/network');
+    const data = await res.json();
+    const p = document.getElementById('ip-display');
+    if (p) p.textContent = 'Current IP: ' + data.ip;
+  }
+
   async function loadDevices() {
     const res = await fetch('/api/devices');
     const data = await res.json();
@@ -65,6 +75,7 @@
   };
 
   loadDevices();
+  loadNetwork();
 
   async function loadAudio() {
     const res = await fetch('/api/audio');

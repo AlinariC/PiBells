@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 from datetime import datetime
@@ -63,6 +64,18 @@ def load_devices() -> List[str]:
 def save_devices(devices: List[str]):
     with open(DEVICES_FILE, "w") as f:
         json.dump(devices, f)
+
+
+def get_local_ip() -> str:
+    """Return the IP address of the primary network interface."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
 
 
 def list_schedules() -> Dict[str, object]:
@@ -194,6 +207,12 @@ def delete_device(index: int):
     devices.pop(index)
     save_devices(devices)
     return devices
+
+
+@app.get("/api/network")
+def network_info():
+    """Return network information such as the current IP address."""
+    return {"ip": get_local_ip()}
 
 
 def list_audio() -> List[str]:
