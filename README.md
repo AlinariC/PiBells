@@ -60,7 +60,7 @@ script are shown below for reference.
    sudo apt install python3 python3-pip python3-venv git nginx -y
    python3 -m venv ~/pibells-venv
    source ~/pibells-venv/bin/activate
-   pip install fastapi uvicorn
+   pip install fastapi uvicorn python-multipart
    ```
 
 2. **Clone the repository** to the home directory of the `pibells` user:
