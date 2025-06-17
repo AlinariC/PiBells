@@ -13,7 +13,7 @@ fi
 apt-get update
 apt-get install -y python3 python3-pip python3-venv git
 
-TARGET_USER=${SUDO_USER:-pi}
+TARGET_USER=${SUDO_USER:-pibells}
 HOME_DIR=$(eval echo "~$TARGET_USER")
 
 # set up python virtual environment for the target user
