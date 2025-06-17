@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 SCHEDULE_FILE = Path("schedule.json")
 DEVICES_FILE = Path("devices.json")
+BUTTONS_FILE = Path("buttons.json")
 AUDIO_DIR = Path("audio")
 AUDIO_DIR.mkdir(exist_ok=True)
 STATIC_DIR = Path("static")
@@ -29,6 +30,13 @@ class ScheduleEntry(BaseModel):
 
 class ScheduleName(BaseModel):
     name: str
+
+
+class QuickButton(BaseModel):
+    name: str
+    sound_file: str
+    color: str = "#ff0000"
+    icon: str = ""
 
 
 def load_all_schedules() -> Dict[str, object]:
@@ -64,6 +72,19 @@ def load_devices() -> List[str]:
 def save_devices(devices: List[str]):
     with open(DEVICES_FILE, "w") as f:
         json.dump(devices, f)
+
+
+def load_buttons() -> List[QuickButton]:
+    if not BUTTONS_FILE.exists():
+        return []
+    with open(BUTTONS_FILE) as f:
+        data = json.load(f)
+    return [QuickButton(**item) for item in data]
+
+
+def save_buttons(buttons: List[QuickButton]):
+    with open(BUTTONS_FILE, "w") as f:
+        json.dump([b.dict() for b in buttons], f)
 
 
 def get_local_ip() -> str:
@@ -237,6 +258,39 @@ class TestRequest(BaseModel):
     sound_file: str
 
 
+@app.get("/api/buttons", response_model=List[QuickButton])
+def get_buttons():
+    return load_buttons()
+
+
+@app.post("/api/buttons", response_model=List[QuickButton])
+def add_button(btn: QuickButton):
+    buttons = load_buttons()
+    buttons.append(btn)
+    save_buttons(buttons)
+    return buttons
+
+
+@app.put("/api/buttons/{index}", response_model=List[QuickButton])
+def update_button(index: int, btn: QuickButton):
+    buttons = load_buttons()
+    if index < 0 or index >= len(buttons):
+        raise HTTPException(status_code=404, detail="Invalid index")
+    buttons[index] = btn
+    save_buttons(buttons)
+    return buttons
+
+
+@app.delete("/api/buttons/{index}", response_model=List[QuickButton])
+def delete_button(index: int):
+    buttons = load_buttons()
+    if index < 0 or index >= len(buttons):
+        raise HTTPException(status_code=404, detail="Invalid index")
+    buttons.pop(index)
+    save_buttons(buttons)
+    return buttons
+
+
 @app.post("/api/test")
 def test_sound(req: TestRequest):
     if req.sound_file not in list_audio():
@@ -252,3 +306,8 @@ def index():
 @app.get("/admin")
 def admin():
     return FileResponse("static/admin.html")
+
+
+@app.get("/buttons")
+def buttons_page():
+    return FileResponse("static/buttons.html")
