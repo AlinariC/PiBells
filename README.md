@@ -1,4 +1,4 @@
-![PiBells Logo](static/logo.svg)
+![PiBells Logo](static/pibells-logo.png)
 
 # PiBells
 
