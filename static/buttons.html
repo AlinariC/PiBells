@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Button Configuration</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <img src="/static/logo.svg" alt="PiBells logo" class="logo" />
+    <a href="/">Back to Schedule</a>
+  </header>
+  <h1>Quick Buttons</h1>
+  <form id="add-form">
+    <label>Name: <input type="text" id="name" required></label>
+    <label>Sound: <select id="sound"></select></label>
+    <label>Color: <input type="color" id="color" value="#ff0000"></label>
+    <label>Icon: <input type="text" id="icon" placeholder="emoji or icon"></label>
+    <button type="submit">Add</button>
+  </form>
+  <table id="buttons">
+    <thead><tr><th>Name</th><th>Sound</th><th>Icon</th><th>Color</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+<script>
+async function loadAudio() {
+  const res = await fetch('/api/audio');
+  const data = await res.json();
+  const select = document.getElementById('sound');
+  if (!select) return;
+  select.innerHTML = '';
+  data.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+}
+
+async function loadButtons() {
+  const res = await fetch('/api/buttons');
+  const data = await res.json();
+  const tbody = document.querySelector('#buttons tbody');
+  tbody.innerHTML = '';
+  data.forEach((btn, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${btn.name}</td><td>${btn.sound_file}</td><td>${btn.icon}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
+    const del = document.createElement('button');
+    del.textContent = 'Delete';
+    del.onclick = async () => {
+      await fetch('/api/buttons/' + i, { method: 'DELETE' });
+      loadButtons();
+    };
+    const td = document.createElement('td');
+    td.appendChild(del);
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById('add-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const name = document.getElementById('name').value;
+  const sound = document.getElementById('sound').value;
+  const color = document.getElementById('color').value;
+  const icon = document.getElementById('icon').value;
+  await fetch('/api/buttons', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, sound_file: sound, color, icon })
+  });
+  e.target.reset();
+  loadButtons();
+};
+
+loadAudio();
+loadButtons();
+</script>
+</body>
+</html>

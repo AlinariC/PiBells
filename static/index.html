@@ -8,8 +8,12 @@
 <body>
   <header>
     <img src="/static/logo.svg" alt="PiBells logo" class="logo" />
-    <a href="/admin">Settings</a>
+    <nav>
+      <a href="/admin">Settings</a> |
+      <a href="/buttons">Buttons</a>
+    </nav>
   </header>
+  <div id="quick-buttons"></div>
   <h1>Bell Schedule</h1>
   <div>
     <label>Active schedule:
@@ -27,7 +31,26 @@
     <thead><tr><th>Time</th><th>Sound</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
-<script>
+  <script>
+async function loadButtons() {
+  const res = await fetch('/api/buttons');
+  const data = await res.json();
+  const container = document.getElementById('quick-buttons');
+  container.innerHTML = '';
+  data.forEach(btn => {
+    const b = document.createElement('button');
+    b.textContent = btn.icon ? btn.icon + ' ' + btn.name : btn.name;
+    b.style.background = btn.color;
+    b.onclick = async () => {
+      await fetch('/api/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sound_file: btn.sound_file })
+      });
+    };
+    container.appendChild(b);
+  });
+}
 async function loadSchedule() {
   const res = await fetch('/api/schedule');
   const data = await res.json();
@@ -110,6 +133,7 @@ document.getElementById('add-form').onsubmit = async (e) => {
 loadScheduleList();
 loadAudio();
 loadSchedule();
+loadButtons();
 </script>
 </body>
 </html>

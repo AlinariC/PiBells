@@ -42,3 +42,12 @@ button {
 form {
   margin-top: 20px;
 }
+#quick-buttons button {
+  margin-right: 5px;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+#quick-buttons {
+  margin-bottom: 20px;
+}
