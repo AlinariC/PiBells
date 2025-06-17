@@ -1,3 +1,5 @@
+![PiBells Logo](static/logo.svg)
+
 # PiBells
 
 A lightweight bell scheduling server using FastAPI. The web interface lets you pick a time and sound file for each bell. When a bell is due, the server sends play requests to Barix devices on the network.
