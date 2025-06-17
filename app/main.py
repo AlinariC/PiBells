@@ -6,14 +6,18 @@ from pathlib import Path
 from typing import Dict, List
 from urllib import request, parse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 SCHEDULE_FILE = Path("schedule.json")
 DEVICES_FILE = Path("devices.json")
+AUDIO_DIR = Path("audio")
+AUDIO_DIR.mkdir(exist_ok=True)
 
 app = FastAPI()
+app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
 
 class ScheduleEntry(BaseModel):
     time: datetime
@@ -188,6 +192,24 @@ def delete_device(index: int):
     devices.pop(index)
     save_devices(devices)
     return devices
+
+
+def list_audio() -> List[str]:
+    return [f.name for f in AUDIO_DIR.iterdir() if f.is_file()]
+
+
+@app.get("/api/audio", response_model=List[str])
+def get_audio_files():
+    return list_audio()
+
+
+@app.post("/api/audio", response_model=List[str])
+async def upload_audio(file: UploadFile = File(...)):
+    dest = AUDIO_DIR / file.filename
+    with dest.open("wb") as f:
+        content = await file.read()
+        f.write(content)
+    return list_audio()
 
 @app.get("/")
 def index():
