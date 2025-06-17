@@ -13,14 +13,14 @@ A lightweight bell scheduling server using FastAPI. The web interface lets you p
 Start the server with:
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 0.0.0.0 --reload
 ```
 
-Open your browser at `http://localhost:8000` to manage the schedule.
+Open your browser at `http://<server-ip>:8000` to manage the schedule.
 
 Bell schedules are stored in `schedule.json`. Multiple schedules can be created and the active one is chosen from the web interface. The server polls this file every 30 seconds and triggers the configured devices for the active schedule.
 
-Device IPs are stored in `devices.json` and can be managed from the admin page at `http://localhost:8000/admin`.
+Device IPs are stored in `devices.json` and can be managed from the admin page at `http://<server-ip>:8000/admin`.
 
 Audio files used for bells can be uploaded from the admin page as well. Uploaded
 files are stored in the `audio/` directory and are selectable when creating
@@ -43,17 +43,18 @@ wget -O - https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | s
 ```
 
 The script installs required packages, clones/updates the repository for the
-`pibells` user and creates a `pibells.service` file in `/etc/systemd/system`. The
+`pibells` user, creates a `pibells.service` file in `/etc/systemd/system`, and
+configures nginx to forward port 80 to the PiBells server on port 8000. The
 service is then enabled and started so PiBells launches automatically on boot.
 
 If you prefer to perform these steps manually, the commands executed by the
 script are shown below for reference.
 
-1. **Install dependencies** (FastAPI and Uvicorn) if they are not already present:
+1. **Install dependencies** (FastAPI, Uvicorn and Nginx) if they are not already present:
 
    ```bash
    sudo apt update
-   sudo apt install python3 python3-pip python3-venv git -y
+   sudo apt install python3 python3-pip python3-venv git nginx -y
    python3 -m venv ~/pibells-venv
    source ~/pibells-venv/bin/activate
    pip install fastapi uvicorn
@@ -77,14 +78,33 @@ script are shown below for reference.
    [Service]
    User=pibells
    WorkingDirectory=/home/pibells/PiBells
-   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0
+   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
    Restart=always
 
    [Install]
    WantedBy=multi-user.target
    ```
 
-4. **Enable and start** the service:
+4. **Configure nginx** as a reverse proxy:
+
+   ```bash
+   sudo tee /etc/nginx/sites-available/pibells > /dev/null <<'EOF'
+   server {
+       listen 80;
+       location / {
+           proxy_pass http://127.0.0.1:8000;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       }
+   }
+   EOF
+   sudo ln -sf /etc/nginx/sites-available/pibells /etc/nginx/sites-enabled/pibells
+   sudo rm -f /etc/nginx/sites-enabled/default
+   sudo systemctl restart nginx
+   ```
+
+5. **Enable and start** the service:
 
    ```bash
    sudo systemctl daemon-reload
@@ -93,4 +113,4 @@ script are shown below for reference.
    ```
 
 PiBells will now automatically start on boot. Access the web interface at
-`http://<raspberrypi-ip>:8000`.
+`http://<raspberrypi-ip>/`.
