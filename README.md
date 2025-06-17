@@ -43,7 +43,7 @@ wget -O - https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | s
 ```
 
 The script installs required packages, clones/updates the repository for the
-`pi` user and creates a `pibells.service` file in `/etc/systemd/system`. The
+`pibells` user and creates a `pibells.service` file in `/etc/systemd/system`. The
 service is then enabled and started so PiBells launches automatically on boot.
 
 If you prefer to perform these steps manually, the commands executed by the
@@ -59,7 +59,7 @@ script are shown below for reference.
    pip install fastapi uvicorn
    ```
 
-2. **Clone the repository** to the home directory of the `pi` user:
+2. **Clone the repository** to the home directory of the `pibells` user:
 
    ```bash
    git clone https://github.com/alinaric/PiBells.git ~/PiBells
@@ -75,9 +75,9 @@ script are shown below for reference.
    After=network.target
 
    [Service]
-   User=pi
-   WorkingDirectory=/home/pi/PiBells
-   ExecStart=/home/pi/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0
+   User=pibells
+   WorkingDirectory=/home/pibells/PiBells
+   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0
    Restart=always
 
    [Install]
