@@ -12,6 +12,13 @@
 <body>
   <h1>Bell Schedule</h1>
   <p><a href="/admin">Configure Devices</a></p>
+  <div>
+    <label>Active schedule:
+      <select id="schedule-select"></select>
+    </label>
+    <input type="text" id="new-schedule" placeholder="New schedule">
+    <button id="add-schedule">Add</button>
+  </div>
   <form id="add-form">
     <label>Date/time: <input type="datetime-local" id="time" required></label>
     <label>Sound file: <input type="text" id="sound" placeholder="bell.mp3" required></label>
@@ -43,6 +50,38 @@ async function loadSchedule() {
   });
 }
 
+async function loadScheduleList() {
+  const res = await fetch('/api/schedules');
+  const data = await res.json();
+  const select = document.getElementById('schedule-select');
+  select.innerHTML = '';
+  data.schedules.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    if (name === data.active) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+document.getElementById('schedule-select').onchange = async (e) => {
+  await fetch('/api/schedules/activate/' + encodeURIComponent(e.target.value), { method: 'POST' });
+  loadSchedule();
+};
+
+document.getElementById('add-schedule').onclick = async () => {
+  const name = document.getElementById('new-schedule').value.trim();
+  if (!name) return;
+  await fetch('/api/schedules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  document.getElementById('new-schedule').value = '';
+  loadScheduleList();
+  loadSchedule();
+};
+
 document.getElementById('add-form').onsubmit = async (e) => {
   e.preventDefault();
   const time = document.getElementById('time').value;
@@ -56,6 +95,7 @@ document.getElementById('add-form').onsubmit = async (e) => {
   loadSchedule();
 };
 
+loadScheduleList();
 loadSchedule();
 </script>
 </body>

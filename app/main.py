@@ -3,7 +3,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 from urllib import request, parse
 
 from fastapi import FastAPI, HTTPException
@@ -19,16 +19,33 @@ class ScheduleEntry(BaseModel):
     time: datetime
     sound_file: str
 
-def load_schedule() -> List[ScheduleEntry]:
+
+class ScheduleName(BaseModel):
+    name: str
+
+
+def load_all_schedules() -> Dict[str, object]:
     if not SCHEDULE_FILE.exists():
-        return []
+        return {"active": "Default", "schedules": {"Default": []}}
     with open(SCHEDULE_FILE) as f:
-        data = json.load(f)
-    return [ScheduleEntry(**item) for item in data]
+        return json.load(f)
+
+
+def save_all_schedules(data: Dict[str, object]):
+    with open(SCHEDULE_FILE, "w") as f:
+        json.dump(data, f, default=str)
+
+def load_schedule() -> List[ScheduleEntry]:
+    data = load_all_schedules()
+    active = data.get("active")
+    entries = data.get("schedules", {}).get(active, [])
+    return [ScheduleEntry(**item) for item in entries]
 
 def save_schedule(entries: List[ScheduleEntry]):
-    with open(SCHEDULE_FILE, "w") as f:
-        json.dump([e.dict() for e in entries], f, default=str)
+    data = load_all_schedules()
+    active = data.get("active")
+    data.setdefault("schedules", {})[active] = [e.dict() for e in entries]
+    save_all_schedules(data)
 
 def load_devices() -> List[str]:
     if not DEVICES_FILE.exists():
@@ -40,6 +57,37 @@ def load_devices() -> List[str]:
 def save_devices(devices: List[str]):
     with open(DEVICES_FILE, "w") as f:
         json.dump(devices, f)
+
+
+def list_schedules() -> Dict[str, object]:
+    data = load_all_schedules()
+    return {"active": data.get("active"), "schedules": list(data.get("schedules", {}).keys())}
+
+
+def create_schedule(name: str):
+    data = load_all_schedules()
+    if name not in data.get("schedules", {}):
+        data.setdefault("schedules", {})[name] = []
+    data["active"] = name  # newly created becomes active
+    save_all_schedules(data)
+
+
+def activate_schedule(name: str):
+    data = load_all_schedules()
+    if name not in data.get("schedules", {}):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    data["active"] = name
+    save_all_schedules(data)
+
+
+def remove_schedule(name: str):
+    data = load_all_schedules()
+    if name not in data.get("schedules", {}):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    if name == data.get("active"):
+        raise HTTPException(status_code=400, detail="Cannot delete active schedule")
+    data["schedules"].pop(name)
+    save_all_schedules(data)
 
 
 def trigger_bell(sound_file: str):
@@ -73,12 +121,14 @@ def on_startup():
 def get_schedule():
     return load_schedule()
 
+
 @app.post("/api/schedule", response_model=List[ScheduleEntry])
 def add_schedule(entry: ScheduleEntry):
     entries = load_schedule()
     entries.append(entry)
     save_schedule(entries)
     return entries
+
 
 @app.delete("/api/schedule/{index}", response_model=List[ScheduleEntry])
 def delete_schedule(index: int):
@@ -88,6 +138,29 @@ def delete_schedule(index: int):
     entries.pop(index)
     save_schedule(entries)
     return entries
+
+
+@app.get("/api/schedules")
+def get_schedules():
+    return list_schedules()
+
+
+@app.post("/api/schedules")
+def add_schedule_name(name: ScheduleName):
+    create_schedule(name.name)
+    return list_schedules()
+
+
+@app.post("/api/schedules/activate/{name}")
+def activate(name: str):
+    activate_schedule(name)
+    return list_schedules()
+
+
+@app.delete("/api/schedules/{name}")
+def delete_schedule_name(name: str):
+    remove_schedule(name)
+    return list_schedules()
 
 
 class Device(BaseModel):
