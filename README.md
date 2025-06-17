@@ -27,13 +27,17 @@ schedule entries.
 ## Permanent Installation on a Raspberry Pi 4
 
 PiBells can run automatically at boot using a systemd service. The easiest way
-to set this up is with the provided `install.sh` script. Run the following
-commands on your Pi:
+to set this up is with the provided `install.sh` script. Download the script
+directly and run it with `sudo`:
 
 ```bash
-git clone https://github.com/alinaric/PiBells.git
-cd PiBells
-sudo ./install.sh
+curl -L https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
+```
+
+Or with `wget`:
+
+```bash
+wget -O - https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
 ```
 
 The script installs required packages, clones/updates the repository for the
