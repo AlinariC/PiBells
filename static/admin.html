@@ -26,6 +26,10 @@
     <button type="submit">Upload</button>
   </form>
   <ul id="audio-list"></ul>
+
+  <h2>Test</h2>
+  <label>Sound file: <select id="test-sound"></select></label>
+  <button id="test-play">Play</button>
   <script>
   async function loadDevices() {
     const res = await fetch('/api/devices');
@@ -67,10 +71,18 @@
     const data = await res.json();
     const list = document.getElementById('audio-list');
     list.innerHTML = '';
+    const testSelect = document.getElementById('test-sound');
+    if (testSelect) testSelect.innerHTML = '';
     data.forEach(name => {
       const li = document.createElement('li');
       li.textContent = name;
       list.appendChild(li);
+      if (testSelect) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        testSelect.appendChild(opt);
+      }
     });
   }
 
@@ -85,6 +97,16 @@
   };
 
   loadAudio();
+
+  document.getElementById('test-play').onclick = async () => {
+    const sound = document.getElementById('test-sound').value;
+    if (!sound) return;
+    await fetch('/api/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sound_file: sound })
+    });
+  };
   </script>
 </body>
 </html>

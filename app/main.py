@@ -213,6 +213,18 @@ async def upload_audio(file: UploadFile = File(...)):
         f.write(content)
     return list_audio()
 
+
+class TestRequest(BaseModel):
+    sound_file: str
+
+
+@app.post("/api/test")
+def test_sound(req: TestRequest):
+    if req.sound_file not in list_audio():
+        raise HTTPException(status_code=404, detail="Sound file not found")
+    trigger_bell(req.sound_file)
+    return {"status": "ok"}
+
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
