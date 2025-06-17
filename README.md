@@ -53,8 +53,10 @@ script are shown below for reference.
 
    ```bash
    sudo apt update
-   sudo apt install python3 python3-pip git -y
-   pip3 install fastapi uvicorn
+   sudo apt install python3 python3-pip python3-venv git -y
+   python3 -m venv ~/pibells-venv
+   source ~/pibells-venv/bin/activate
+   pip install fastapi uvicorn
    ```
 
 2. **Clone the repository** to the home directory of the `pi` user:
@@ -75,7 +77,7 @@ script are shown below for reference.
    [Service]
    User=pi
    WorkingDirectory=/home/pi/PiBells
-   ExecStart=/usr/bin/env uvicorn app.main:app --host 0.0.0.0
+   ExecStart=/home/pi/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0
    Restart=always
 
    [Install]
