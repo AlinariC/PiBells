@@ -4,7 +4,7 @@ import threading
 import time
 from datetime import datetime, time as dt_time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib import request, parse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -76,12 +76,28 @@ def save_devices(devices: List[str]):
         json.dump(devices, f)
 
 
-def discover_barix_devices(timeout: float = 0.2) -> List[str]:
-    """Scan the local /24 network for Barix devices."""
-    local_ip = get_local_ip()
-    if local_ip == "0.0.0.0":
-        return []
-    subnet = ".".join(local_ip.split(".")[:-1])
+def discover_barix_devices(network: Optional[str] = None, timeout: float = 0.2) -> List[str]:
+    """Scan a /24 network for Barix devices.
+
+    If ``network`` is ``None`` the subnet of the current machine is used. The
+    ``network`` parameter should contain the first three octets of the desired
+    subnet (e.g. ``"192.168.2"``). ``192.168.2.0/24`` and a trailing dot are
+    also accepted.
+    """
+    if network is None:
+        local_ip = get_local_ip()
+        if local_ip == "0.0.0.0":
+            return []
+        subnet = ".".join(local_ip.split(".")[:-1])
+    else:
+        subnet = network.strip()
+        if subnet.endswith(".0/24"):
+            subnet = subnet[:-4]
+        if subnet.endswith("."):
+            subnet = subnet[:-1]
+        parts = subnet.split(".")
+        if len(parts) != 3:
+            raise ValueError("Network must be like '192.168.1'")
     found: List[str] = []
     for i in range(1, 255):
         target = f"{subnet}.{i}"
@@ -254,9 +270,12 @@ def delete_device(index: int):
 
 
 @app.get("/api/devices/scan", response_model=List[str])
-def scan_devices():
-    """Discover Barix devices on the local network."""
-    return discover_barix_devices()
+def scan_devices(network: Optional[str] = None):
+    """Discover Barix devices on the specified network."""
+    try:
+        return discover_barix_devices(network=network)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/network")

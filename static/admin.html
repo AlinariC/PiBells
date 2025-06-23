@@ -15,6 +15,7 @@
     <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
     <button type="submit">Add</button>
   </form>
+  <label>Network: <input type="text" id="scan-net" placeholder="192.168.1"></label>
   <button id="scan-btn">Scan Network</button>
   <table id="devices">
     <thead><tr><th>IP</th><th>Actions</th></tr></thead>
@@ -79,7 +80,9 @@
   loadNetwork();
 
   document.getElementById('scan-btn').onclick = async () => {
-    const res = await fetch('/api/devices/scan');
+    const net = document.getElementById('scan-net').value;
+    const url = net ? '/api/devices/scan?network=' + encodeURIComponent(net) : '/api/devices/scan';
+    const res = await fetch(url);
     const data = await res.json();
     for (const ip of data) {
       await fetch('/api/devices', {
