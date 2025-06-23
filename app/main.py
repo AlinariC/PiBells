@@ -76,6 +76,26 @@ def save_devices(devices: List[str]):
         json.dump(devices, f)
 
 
+def discover_barix_devices(timeout: float = 0.2) -> List[str]:
+    """Scan the local /24 network for Barix devices."""
+    local_ip = get_local_ip()
+    if local_ip == "0.0.0.0":
+        return []
+    subnet = ".".join(local_ip.split(".")[:-1])
+    found: List[str] = []
+    for i in range(1, 255):
+        target = f"{subnet}.{i}"
+        try:
+            with socket.create_connection((target, 80), timeout=timeout) as sock:
+                sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                data = sock.recv(200).decode("utf-8", errors="ignore")
+                if "Barix" in data:
+                    found.append(target)
+        except Exception:
+            pass
+    return found
+
+
 def load_buttons() -> List[QuickButton]:
     if not BUTTONS_FILE.exists():
         return []
@@ -231,6 +251,12 @@ def delete_device(index: int):
     devices.pop(index)
     save_devices(devices)
     return devices
+
+
+@app.get("/api/devices/scan", response_model=List[str])
+def scan_devices():
+    """Discover Barix devices on the local network."""
+    return discover_barix_devices()
 
 
 @app.get("/api/network")

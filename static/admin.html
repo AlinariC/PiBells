@@ -15,6 +15,7 @@
     <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
     <button type="submit">Add</button>
   </form>
+  <button id="scan-btn">Scan Network</button>
   <table id="devices">
     <thead><tr><th>IP</th><th>Actions</th></tr></thead>
     <tbody></tbody>
@@ -76,6 +77,19 @@
 
   loadDevices();
   loadNetwork();
+
+  document.getElementById('scan-btn').onclick = async () => {
+    const res = await fetch('/api/devices/scan');
+    const data = await res.json();
+    for (const ip of data) {
+      await fetch('/api/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip })
+      });
+    }
+    loadDevices();
+  };
 
   async function loadAudio() {
     const res = await fetch('/api/audio');
