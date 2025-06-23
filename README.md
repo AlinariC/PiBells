@@ -26,7 +26,9 @@ Bell schedules are stored in `schedule.json`. Multiple schedules can be created 
 
 Device IPs are stored in `devices.json` and can be managed from the admin page at `http://<server-ip>/admin`.
 The admin page also provides a **Scan Network** button which automatically discovers
-Barix devices on the local subnet and adds them to the list.
+Barix devices on the local subnet and adds them to the list. If your devices are
+on a different subnet you can enter the network prefix (e.g. `192.168.2`) before
+scanning to search that network instead.
 
 Audio files used for bells can be uploaded from the admin page as well. Uploaded
 files are stored in the `audio/` directory and are selectable when creating
