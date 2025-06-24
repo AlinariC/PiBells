@@ -1,12 +1,36 @@
+:root {
+  --bg-color: #f5f5f5;
+  --text-color: #333;
+  --header-bg: #fff;
+  --link-color: #007acc;
+  --table-bg: #fff;
+  --table-border: #ccc;
+  --th-bg: #eaeaea;
+  --footer-bg: #222;
+  --footer-text: #fff;
+}
+
 body {
   font-family: Arial, sans-serif;
   margin: 0;
   padding: 40px;
-  background: #f5f5f5;
-  color: #333;
+  background: var(--bg-color);
+  color: var(--text-color);
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+}
+
+body.dark-mode {
+  --bg-color: #1e1e1e;
+  --text-color: #e0e0e0;
+  --header-bg: #2c2c2c;
+  --link-color: #4ea3ff;
+  --table-bg: #2c2c2c;
+  --table-border: #555;
+  --th-bg: #444;
+  --footer-bg: #000;
+  --footer-text: #fff;
 }
 header {
   display: flex;
@@ -14,7 +38,7 @@ header {
   margin-bottom: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
-  background: white;
+  background: var(--header-bg);
   padding: 10px 20px;
 }
 
@@ -25,7 +49,7 @@ header img.logo {
   height: 50px;
 }
 a {
-  color: #007acc;
+  color: var(--link-color);
   text-decoration: none;
 }
 a:hover {
@@ -37,7 +61,7 @@ table {
   border-collapse: collapse;
   width: 100%;
   margin-top: 20px;
-  background: white;
+  background: var(--table-bg);
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   overflow: hidden;
@@ -49,9 +73,9 @@ table {
 }
 .schedule-day {
   flex: 1;
-  background: white;
+  background: var(--table-bg);
   padding: 10px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--table-border);
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
@@ -65,12 +89,12 @@ table {
   margin: 4px 0;
 }
 th, td {
-  border: 1px solid #ccc;
+  border: 1px solid var(--table-border);
   padding: 8px;
   text-align: left;
 }
 th {
-  background: #eaeaea;
+  background: var(--th-bg);
 }
 button {
   padding: 5px 10px;
@@ -116,7 +140,7 @@ form {
 }
 
 .audio-item {
-  background: white;
+  background: var(--table-bg);
   padding: 10px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
@@ -126,7 +150,7 @@ form {
 }
 
 .test-section {
-  background: white;
+  background: var(--table-bg);
   padding: 10px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
@@ -143,8 +167,8 @@ form {
 footer {
   margin-top: auto;
   padding: 10px 20px;
-  background: #222;
-  color: #fff;
+  background: var(--footer-bg);
+  color: var(--footer-text);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -163,11 +187,23 @@ footer img.footer-logo {
 }
 
 footer a {
-  color: #fff;
+  color: var(--footer-text);
   text-decoration: underline;
 }
 
 footer .footer-right {
   margin-left: auto;
   text-align: right;
+}
+
+.theme-switch {
+  position: fixed;
+  right: 20px;
+  bottom: 80px;
+  background: var(--header-bg);
+  color: var(--text-color);
+  border: 1px solid var(--table-border);
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
