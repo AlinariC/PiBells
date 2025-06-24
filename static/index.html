@@ -36,7 +36,11 @@ async function loadButtons() {
   container.innerHTML = '';
   data.forEach(btn => {
     const b = document.createElement('button');
-    b.textContent = btn.icon ? btn.icon + ' ' + btn.name : btn.name;
+    if (btn.icon) {
+      b.innerHTML = `<i class="fas ${btn.icon}"></i> ${btn.name}`;
+    } else {
+      b.textContent = btn.name;
+    }
     b.style.background = btn.color;
     b.onclick = async () => {
       await fetch('/api/test', {
