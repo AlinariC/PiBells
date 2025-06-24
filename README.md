@@ -59,6 +59,16 @@ The script installs required packages, clones/updates the repository for the
 `pibells` user and creates a `pibells.service` file in `/etc/systemd/system`. The
 service is then enabled and started so PiBells launches automatically on boot.
 
+### Updating
+
+Run the same command again to update PiBells:
+
+```bash
+curl -L https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
+```
+
+After installation you can also update from the admin page by clicking the **Update** button under the *Software* section.
+
 If you prefer to perform these steps manually, the commands executed by the
 script are shown below for reference.
 
@@ -121,6 +131,11 @@ script are shown below for reference.
    ```
 
 PiBells will now automatically start on boot and be available via nginx at `http://<raspberrypi-ip>/`.
+
+## Versioning
+
+Each PiBells release defines a `__version__` value in `app/__init__.py`. The
+admin page displays this version and checks GitHub for the most recent one.
 
 ---
 

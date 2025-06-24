@@ -40,6 +40,10 @@
     <label>Sound file: <select id="test-sound"></select></label>
     <button id="test-play"><i class="fas fa-play"></i> Play</button>
   </div>
+
+  <h2>Software</h2>
+  <p id="version-display"></p>
+  <button id="update-btn"><i class="fas fa-download"></i> Update</button>
   <script>
   async function loadNetwork() {
     const res = await fetch('/api/network');
@@ -191,6 +195,34 @@
       body: JSON.stringify({ sound_file: sound })
     });
   };
+
+  async function loadVersion() {
+    try {
+      const res = await fetch('/api/version');
+      const data = await res.json();
+      document.getElementById('version-display').textContent =
+        `Version: ${data.current} (latest ${data.latest})`;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  document.getElementById('update-btn').onclick = async () => {
+    if (!confirm('Update PiBells now?')) return;
+    const btn = document.getElementById('update-btn');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/update', { method: 'POST' });
+      const data = await res.json();
+      alert(data.status);
+    } catch (e) {
+      alert('Update failed');
+    }
+    btn.disabled = false;
+    loadVersion();
+  };
+
+  loadVersion();
   </script>
   <footer>
     <div class="footer-left">
