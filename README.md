@@ -10,7 +10,7 @@
   <a href="https://pixelpacific.com"><img src="https://img.shields.io/badge/PixelPacific-Website-blue" alt="PixelPacific"></a>
 </p>
 
-PiBells is a lightweight bell scheduler built with FastAPI. Use the web interface to create schedules, upload sounds and manage your Barix devices. Perfect for schools or facilities needing a simple network bell system.
+PiBells is a lightweight bell scheduler built with FastAPI. It turns a Raspberry Pi into a dedicated bell controller that you manage entirely from your browser. Upload sounds, create schedules and configure your Barix devices without touching the command line. Designed for Raspberry Pi OS Lite (64‑bit), PiBells runs quietly in the background and continues to work even without an internet connection.
 
 ## Features
 - 📅 Create multiple schedules from your browser
@@ -19,11 +19,15 @@ PiBells is a lightweight bell scheduler built with FastAPI. Use the web interfac
 - 🎵 Upload MP3, WAV, OGG or M4A files as bell sounds
 - 🔘 Create custom quick-play buttons
 - 🔄 Update the software from the admin page
+- 🔐 Password-protected web interface
+- 📈 Login banner displays the Pi's IP address
+- ⚙️ Works offline after installation
 
 ## Hardware
- - Raspberry Pi 4 Model B (4 GB+ recommended)
-- microSD card (8 GB or larger) with Raspberry Pi OS
-- Network connection (Ethernet or Wi-Fi)
+- 🤖 Raspberry Pi 4 Model B (4 GB+ recommended)
+- 💾 microSD card (8 GB or larger) with Raspberry Pi OS Lite (64-bit)
+- 🌐 Network connection (Ethernet or Wi-Fi)
+- 🔈 Optional Barix Exstreamer or local speaker
 
 ## Installation
 Run the install script on your Pi with `sudo`:
@@ -40,8 +44,8 @@ Once the service is running, open `http://<raspberrypi-ip>/` in your browser to 
 If you prefer to do things yourself, see [`install.sh`](install.sh) for the commands.
 
 ## Preparing the Raspberry Pi
-1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS (64-bit)** "Recommended" image.
-2. In the Imager's advanced options, configure your username, password, network and enable SSH if desired.
+1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS Lite (64-bit)** image.
+2. In the Imager's advanced options, set the username to **pibells**, choose a password, configure your network and enable SSH if desired.
 3. Insert the card into the Pi, power it on and wait for it to connect to your network.
 4. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
 
