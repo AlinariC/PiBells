@@ -13,7 +13,7 @@
 body {
   font-family: Arial, sans-serif;
   margin: 0;
-  padding: 40px;
+  padding: 20px 40px;
   background: var(--bg-color);
   color: var(--text-color);
   display: flex;
@@ -211,6 +211,10 @@ footer .footer-right {
   border-radius: 8px;
   padding: 5px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+}
+.theme-switch select {
+  font-family: "Font Awesome 6 Free", Arial, sans-serif;
+  font-weight: 900;
 }
 
 .network-info {
