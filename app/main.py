@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Iterable, Tuple
 from urllib import request, parse
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -18,6 +18,8 @@ DEVICES_FILE = BASE_DIR / "devices.json"
 BUTTONS_FILE = BASE_DIR / "buttons.json"
 AUDIO_DIR = BASE_DIR / "audio"
 AUDIO_DIR.mkdir(exist_ok=True)
+AUDIO_META_FILE = BASE_DIR / "audio.json"
+SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI()
@@ -39,6 +41,11 @@ class QuickButton(BaseModel):
     sound_file: str
     color: str = "#ff0000"
     icon: str = ""
+
+
+class AudioFile(BaseModel):
+    file: str
+    name: str
 
 
 def load_all_schedules() -> Dict[str, object]:
@@ -129,6 +136,18 @@ def load_buttons() -> List[QuickButton]:
 def save_buttons(buttons: List[QuickButton]):
     with open(BUTTONS_FILE, "w") as f:
         json.dump([b.dict() for b in buttons], f)
+
+
+def load_audio_meta() -> Dict[str, str]:
+    if not AUDIO_META_FILE.exists():
+        return {}
+    with open(AUDIO_META_FILE) as f:
+        return json.load(f)
+
+
+def save_audio_meta(meta: Dict[str, str]):
+    with open(AUDIO_META_FILE, "w") as f:
+        json.dump(meta, f)
 
 
 def get_local_ip() -> str:
@@ -310,21 +329,44 @@ def network_info():
     return {"ip": get_local_ip()}
 
 
-def list_audio() -> List[str]:
-    return [f.name for f in AUDIO_DIR.iterdir() if f.is_file()]
+def list_audio() -> List[AudioFile]:
+    meta = load_audio_meta()
+    files: List[AudioFile] = []
+    changed = False
+    for f in AUDIO_DIR.iterdir():
+        if not f.is_file() or f.suffix.lower() not in SUPPORTED_AUDIO_EXTS:
+            continue
+        name = meta.get(f.name, f.stem)
+        if f.name not in meta:
+            meta[f.name] = name
+            changed = True
+        files.append(AudioFile(file=f.name, name=name))
+    missing = set(meta.keys()) - {af.file for af in files}
+    if missing:
+        for k in missing:
+            meta.pop(k, None)
+        changed = True
+    if changed:
+        save_audio_meta(meta)
+    return files
 
 
-@app.get("/api/audio", response_model=List[str])
+@app.get("/api/audio", response_model=List[AudioFile])
 def get_audio_files():
     return list_audio()
 
 
-@app.post("/api/audio", response_model=List[str])
-async def upload_audio(file: UploadFile = File(...)):
+@app.post("/api/audio", response_model=List[AudioFile])
+async def upload_audio(name: str = Form(...), file: UploadFile = File(...)):
+    if file.filename == "" or Path(file.filename).suffix.lower() not in SUPPORTED_AUDIO_EXTS:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
     dest = AUDIO_DIR / file.filename
     with dest.open("wb") as f:
         content = await file.read()
         f.write(content)
+    meta = load_audio_meta()
+    meta[file.filename] = name or Path(file.filename).stem
+    save_audio_meta(meta)
     return list_audio()
 
 

@@ -26,6 +26,7 @@
   <div id="schedule-grid" class="schedule-grid"></div>
   <script>
 let audioFiles = [];
+let audioMap = {};
 async function loadButtons() {
   const res = await fetch('/api/buttons');
   const data = await res.json();
@@ -63,7 +64,8 @@ async function loadSchedule() {
         .sort((a,b)=>a.time.localeCompare(b.time))
         .forEach(ev => {
           const li = document.createElement('li');
-          li.textContent = `${ev.time} - ${ev.sound_file}`;
+          const display = audioMap[ev.sound_file] || ev.sound_file;
+          li.textContent = `${ev.time} - ${display}`;
           const btn = document.createElement('button');
           btn.textContent = 'Remove';
           btn.onclick = async () => {
@@ -80,10 +82,10 @@ async function loadSchedule() {
     t.type = 'time';
     t.required = true;
     const sel = document.createElement('select');
-    audioFiles.forEach(name => {
+    audioFiles.forEach(file => {
       const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
+      opt.value = file.file;
+      opt.textContent = file.name;
       sel.appendChild(opt);
     });
     const addBtn = document.createElement('button');
@@ -121,6 +123,8 @@ async function loadScheduleList() {
 async function loadAudio() {
   const res = await fetch('/api/audio');
   audioFiles = await res.json();
+  audioMap = {};
+  audioFiles.forEach(f => { audioMap[f.file] = f.name; });
 }
 document.getElementById('set-schedule').onclick = async () => {
   const name = document.getElementById('schedule-select').value;

@@ -29,6 +29,7 @@
   <h2>Audio Files</h2>
   <form id="upload-form">
     <input type="file" id="audio-file" accept="audio/*" required>
+    <input type="text" id="audio-name" placeholder="Name" required>
     <button type="submit">Upload</button>
   </form>
   <ul id="audio-list"></ul>
@@ -113,14 +114,14 @@
     list.innerHTML = '';
     const testSelect = document.getElementById('test-sound');
     if (testSelect) testSelect.innerHTML = '';
-    data.forEach(name => {
+    data.forEach(file => {
       const li = document.createElement('li');
-      li.textContent = name;
+      li.textContent = file.name;
       list.appendChild(li);
       if (testSelect) {
         const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
+        opt.value = file.file;
+        opt.textContent = file.name;
         testSelect.appendChild(opt);
       }
     });
@@ -129,10 +130,13 @@
   document.getElementById('upload-form').onsubmit = async (e) => {
     e.preventDefault();
     const fileInput = document.getElementById('audio-file');
+    const nameInput = document.getElementById('audio-name');
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
+    formData.append('name', nameInput.value);
     await fetch('/api/audio', { method: 'POST', body: formData });
     fileInput.value = '';
+    nameInput.value = '';
     loadAudio();
   };
 
