@@ -663,3 +663,13 @@ def admin():
 @app.get("/buttons")
 def buttons_page():
     return FileResponse("static/buttons.html")
+
+@app.get("/manifest.json")
+def manifest_file():
+    return FileResponse("static/manifest.json")
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    return FileResponse("static/service-worker.js", media_type="application/javascript")
+
