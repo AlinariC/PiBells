@@ -9,7 +9,10 @@
 <body>
   <header>
     <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
-    <a href="/"><i class="fas fa-arrow-left"></i> Back to Schedule</a>
+    <div id="current-time"></div>
+    <nav>
+      <a href="/"><i class="fas fa-arrow-left"></i> Back to Schedule</a>
+    </nav>
   </header>
   <h1>Barix Devices</h1>
   <form id="add-form">
@@ -223,6 +226,19 @@
   };
 
   loadVersion();
+  function updateTime() {
+    const now = new Date();
+    const pad = n => n.toString().padStart(2, '0');
+    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    let hours = now.getHours();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    if (hours === 0) hours = 12;
+    const str = `${days[now.getDay()]} ${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
+    document.getElementById('current-time').textContent = str;
+  }
+  updateTime();
+  setInterval(updateTime, 1000);
   </script>
   <footer>
     <div class="footer-left">
