@@ -4,11 +4,11 @@ import threading
 import time
 from datetime import datetime, time as dt_time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Iterable, Tuple
 from urllib import request, parse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -76,18 +76,19 @@ def save_devices(devices: List[str]):
         json.dump(devices, f)
 
 
-def discover_barix_devices(network: Optional[str] = None, timeout: float = 0.2) -> List[str]:
-    """Scan a /24 network for Barix devices.
+def discover_barix_devices_iter(
+    network: Optional[str] = None, timeout: float = 0.2
+) -> Iterable[Tuple[int, Optional[str]]]:
+    """Yield progress while scanning for Barix devices.
 
-    If ``network`` is ``None`` the subnet of the current machine is used. The
-    ``network`` parameter should contain the first three octets of the desired
-    subnet (e.g. ``"192.168.2"``). ``192.168.2.0/24`` and a trailing dot are
-    also accepted.
+    The returned iterator yields a tuple ``(index, ip)`` for every host that is
+    checked where ``index`` is the current host number (1-254) and ``ip`` is the
+    discovered device IP or ``None`` if no device was found at that address.
     """
     if network is None:
         local_ip = get_local_ip()
         if local_ip == "0.0.0.0":
-            return []
+            return
         subnet = ".".join(local_ip.split(".")[:-1])
     else:
         subnet = network.strip()
@@ -98,18 +99,23 @@ def discover_barix_devices(network: Optional[str] = None, timeout: float = 0.2) 
         parts = subnet.split(".")
         if len(parts) != 3:
             raise ValueError("Network must be like '192.168.1'")
-    found: List[str] = []
     for i in range(1, 255):
         target = f"{subnet}.{i}"
+        found_ip = None
         try:
             with socket.create_connection((target, 80), timeout=timeout) as sock:
                 sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
                 data = sock.recv(200).decode("utf-8", errors="ignore")
                 if "Barix" in data:
-                    found.append(target)
+                    found_ip = target
         except Exception:
             pass
-    return found
+        yield i, found_ip
+
+
+def discover_barix_devices(network: Optional[str] = None, timeout: float = 0.2) -> List[str]:
+    """Scan a /24 network for Barix devices and return the found IPs."""
+    return [ip for _, ip in discover_barix_devices_iter(network, timeout) if ip]
 
 
 def load_buttons() -> List[QuickButton]:
@@ -276,6 +282,26 @@ def scan_devices(network: Optional[str] = None):
         return discover_barix_devices(network=network)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/devices/scan_stream")
+def scan_devices_stream(network: Optional[str] = None):
+    """Stream progress while scanning for Barix devices."""
+
+    def event_gen():
+        devices: List[str] = []
+        try:
+            for idx, ip in discover_barix_devices_iter(network=network):
+                data = {"progress": idx}
+                if ip:
+                    devices.append(ip)
+                    data["device"] = ip
+                yield f"data:{json.dumps(data)}\n\n"
+            yield f"data:{json.dumps({'complete': True, 'devices': devices})}\n\n"
+        except ValueError as e:
+            yield f"data:{json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.get("/api/network")

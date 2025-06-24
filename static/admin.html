@@ -17,6 +17,7 @@
   </form>
   <label>Network: <input type="text" id="scan-net" placeholder="192.168.1"></label>
   <button id="scan-btn">Scan Network</button>
+  <progress id="scan-progress" value="0" max="254" style="display:none;"></progress>
   <table id="devices">
     <thead><tr><th>IP</th><th>Actions</th></tr></thead>
     <tbody></tbody>
@@ -79,19 +80,30 @@
   loadDevices();
   loadNetwork();
 
-  document.getElementById('scan-btn').onclick = async () => {
+  document.getElementById('scan-btn').onclick = () => {
     const net = document.getElementById('scan-net').value;
-    const url = net ? '/api/devices/scan?network=' + encodeURIComponent(net) : '/api/devices/scan';
-    const res = await fetch(url);
-    const data = await res.json();
-    for (const ip of data) {
-      await fetch('/api/devices', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip })
-      });
-    }
-    loadDevices();
+    const url = net ? '/api/devices/scan_stream?network=' + encodeURIComponent(net) : '/api/devices/scan_stream';
+    const progress = document.getElementById('scan-progress');
+    progress.value = 0;
+    progress.style.display = 'inline';
+    const es = new EventSource(url);
+    es.onmessage = async (e) => {
+      const data = JSON.parse(e.data);
+      if ('progress' in data) progress.value = data.progress;
+      if (data.device) {
+        await fetch('/api/devices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: data.device })
+        });
+      }
+      if (data.complete || data.error) {
+        es.close();
+        progress.style.display = 'none';
+        if (data.error) alert(data.error);
+        loadDevices();
+      }
+    };
   };
 
   async function loadAudio() {
