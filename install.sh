@@ -17,6 +17,9 @@ apt-get install -y python3 python3-pip python3-venv git nginx neofetch
 TARGET_USER=${SUDO_USER:-pibells}
 HOME_DIR=$(eval echo "~$TARGET_USER")
 
+# allow the service account to read /etc/shadow for authentication
+usermod -aG shadow "$TARGET_USER"
+
 # set up python virtual environment for the target user
 VENV_DIR="$HOME_DIR/pibells-venv"
 if [ ! -d "$VENV_DIR" ]; then

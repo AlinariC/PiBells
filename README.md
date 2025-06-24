@@ -47,7 +47,13 @@ If you prefer to do things yourself, see [`install.sh`](install.sh) for the comm
 1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS Lite (64-bit)** image.
 2. In the Imager's advanced options, set the username to **pibells**, choose a password, configure your network and enable SSH if desired.
 3. Insert the card into the Pi, power it on and wait for it to connect to your network.
-4. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
+4. Before installing, add your PiBells account to the `shadow` group so the service can verify passwords:
+
+   ```bash
+   sudo usermod -aG shadow pibells
+   ```
+
+5. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
 
 ## Versioning
 The current version is defined in [`app/__init__.py`](app/__init__.py). The admin page checks GitHub for updates and lets you upgrade with a single click.
