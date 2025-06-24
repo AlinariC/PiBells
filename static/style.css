@@ -100,7 +100,7 @@ th {
 button {
   padding: 5px 10px;
 }
-button i {
+button .icon {
   margin-right: 4px;
 }
 form {
@@ -253,8 +253,8 @@ footer .footer-right {
   margin-bottom: 10px;
 }
 
-/* Settings page fancy buttons */
-.settings-page button {
+/* Reusable fancy button style */
+button.btn {
   border: none;
   padding: 8px 16px;
   border-radius: 20px;
@@ -263,8 +263,11 @@ footer .footer-right {
   cursor: pointer;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   transition: transform 0.1s ease-in-out;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
-.settings-page button:hover {
+button.btn:hover {
   transform: scale(1.05);
 }
 
