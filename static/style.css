@@ -75,3 +75,8 @@ form {
 #quick-buttons {
   margin-bottom: 20px;
 }
+
+#scan-progress {
+  margin-left: 10px;
+  width: 200px;
+}
