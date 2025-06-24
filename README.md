@@ -5,7 +5,7 @@
 [![License: PPPL 1.0](https://img.shields.io/badge/License-PPPL%201.0-blue)](LICENSE)
 [![PixelPacific](https://img.shields.io/badge/PixelPacific-Website-blue)](https://pixelpacific.com)
 
-PiBells is a lightweight bell scheduling server built with FastAPI. The web interface lets you pick a time and sound file for each bell. When a bell is due, the server sends play requests to Barix devices on the network.
+PiBells is a lightweight bell scheduling server built with FastAPI. The web interface lets you pick a time and sound file for each bell. When a bell is due, the server sends play requests to Barix devices on the network and plays the sound through the local sound card.
 
 ## Requirements
 

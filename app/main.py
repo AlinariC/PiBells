@@ -210,14 +210,41 @@ def remove_schedule(name: str):
 
 
 def trigger_bell(sound_file: str):
+    """Play ``sound_file`` on all devices and the local sound card."""
     devices = load_devices()
-    for device in devices:
-        url = f"http://{device}/play"  # Example endpoint
+    path = AUDIO_DIR / sound_file
+
+    def play_local():
+        """Play the audio file on the local sound card if possible."""
+        player_cmds = [
+            ["ffplay", "-nodisp", "-autoexit", str(path)],
+            ["aplay", str(path)],
+        ]
+        for cmd in player_cmds:
+            try:
+                subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                return
+            except FileNotFoundError:
+                continue
+        print("No audio player found (ffplay/aplay)")
+
+    def send(device: str):
+        url = f"http://{device}/play"
         data = parse.urlencode({"file": sound_file}).encode()
         try:
             request.urlopen(url, data=data, timeout=2)
         except Exception as e:
             print(f"Failed to contact {device}: {e}")
+
+    # Start local playback and send requests concurrently
+    threads = [threading.Thread(target=send, args=(d,), daemon=True) for d in devices]
+    for t in threads:
+        t.start()
+    threading.Thread(target=play_local, daemon=True).start()
+    for t in threads:
+        t.join()
 
 
 def bell_daemon():
