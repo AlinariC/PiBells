@@ -20,7 +20,7 @@
   <button id="scan-btn"><i class="fas fa-search"></i> Scan Network</button>
   <progress id="scan-progress" value="0" max="254" style="display:none;"></progress>
   <table id="devices">
-    <thead><tr><th>IP</th><th>Actions</th></tr></thead>
+    <thead><tr><th>IP</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
 
@@ -55,19 +55,40 @@
     tbody.innerHTML = '';
     data.forEach((ip, i) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${ip}</td>`;
+      const ipTd = document.createElement('td');
+      ipTd.textContent = ip;
+      const statusTd = document.createElement('td');
+      statusTd.innerHTML = '<i class="fas fa-circle status-icon" data-ip="' + ip + '"></i>';
       const btn = document.createElement('button');
       btn.innerHTML = '<i class="fas fa-trash"></i> Delete';
       btn.onclick = async () => {
         await fetch('/api/devices/' + i, { method: 'DELETE' });
         loadDevices();
       };
-      const td = document.createElement('td');
-      td.appendChild(btn);
-      tr.appendChild(td);
+      const actionTd = document.createElement('td');
+      actionTd.appendChild(btn);
+      tr.appendChild(ipTd);
+      tr.appendChild(statusTd);
+      tr.appendChild(actionTd);
       tbody.appendChild(tr);
     });
+    updateStatuses();
   }
+
+  async function updateStatuses() {
+    const res = await fetch('/api/devices/status');
+    const data = await res.json();
+    document.querySelectorAll('.status-icon').forEach(icon => {
+      const ip = icon.dataset.ip;
+      if (data[ip]) {
+        icon.style.color = 'green';
+      } else {
+        icon.style.color = 'red';
+      }
+    });
+  }
+
+  setInterval(updateStatuses, 5000);
 
   document.getElementById('add-form').onsubmit = async (e) => {
     e.preventDefault();

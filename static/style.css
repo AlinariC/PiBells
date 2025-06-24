@@ -131,3 +131,7 @@ form {
   gap: 10px;
   margin-top: 10px;
 }
+
+.status-icon {
+  font-size: 1.2em;
+}
