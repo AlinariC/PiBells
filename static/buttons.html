@@ -4,11 +4,12 @@
   <meta charset="UTF-8" />
   <title>Button Configuration</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
   <header>
     <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
-    <a href="/">Back to Schedule</a>
+    <a href="/"><i class="fas fa-arrow-left"></i> Back to Schedule</a>
   </header>
   <h1>Quick Buttons</h1>
   <form id="add-form">
@@ -16,7 +17,7 @@
     <label>Sound: <select id="sound"></select></label>
     <label>Color: <input type="color" id="color" value="#ff0000"></label>
     <label>Icon: <input type="text" id="icon" placeholder="emoji or icon"></label>
-    <button type="submit">Add</button>
+    <button type="submit"><i class="fas fa-plus"></i> Add</button>
   </form>
   <table id="buttons">
     <thead><tr><th>Name</th><th>Sound</th><th>Icon</th><th>Color</th><th>Actions</th></tr></thead>
@@ -50,7 +51,7 @@ async function loadButtons() {
     const sound = audioMap[btn.sound_file] || btn.sound_file;
     tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${btn.icon}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
     const del = document.createElement('button');
-    del.textContent = 'Delete';
+    del.innerHTML = '<i class="fas fa-trash"></i> Delete';
     del.onclick = async () => {
       await fetch('/api/buttons/' + i, { method: 'DELETE' });
       loadButtons();
