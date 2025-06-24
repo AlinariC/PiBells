@@ -7,6 +7,9 @@ function applyTheme(mode) {
   localStorage.setItem('theme', mode);
   const select = document.getElementById('theme-select');
   if (select && select.value !== mode) select.value = mode;
+  document.querySelectorAll('.theme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.theme === mode);
+  });
 }
 
 function initTheme() {
@@ -17,6 +20,9 @@ function initTheme() {
     select.value = saved;
     select.addEventListener('change', (e) => applyTheme(e.target.value));
   }
+  document.querySelectorAll('.theme-btn').forEach(btn => {
+    btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
+  });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (localStorage.getItem('theme') === 'auto') applyTheme('auto');
   });
