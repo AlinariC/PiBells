@@ -78,7 +78,7 @@
       const statusTd = document.createElement('td');
       statusTd.innerHTML = '<span class="status-icon icon" data-ip="' + ip + '">●</span>';
       const btn = document.createElement('button');
-      btn.className = 'btn';
+      btn.className = 'btn btn-danger';
       btn.innerHTML = '<span class="icon">🗑</span> Delete';
       btn.onclick = async () => {
         await fetch('/api/devices/' + i, { method: 'DELETE' });
@@ -178,7 +178,7 @@
       };
       div.appendChild(edit);
       const del = document.createElement('button');
-      del.className = 'btn';
+      del.className = 'btn btn-danger';
       del.innerHTML = '<span class="icon">🗑</span>';
       del.onclick = async () => {
         if (!confirm('Delete this file?')) return;

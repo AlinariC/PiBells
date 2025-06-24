@@ -73,7 +73,7 @@ async function loadButtons() {
     const iconHtml = icon ? `<span class="icon">${icon}</span>` : '';
     tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${iconHtml}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
     const del = document.createElement('button');
-    del.className = 'btn';
+    del.className = 'btn btn-danger';
     del.innerHTML = '<span class="icon">🗑</span> Delete';
     del.onclick = async () => {
       await fetch('/api/buttons/' + i, { method: 'DELETE' });

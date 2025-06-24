@@ -343,6 +343,9 @@ button.btn {
   align-items: center;
   gap: 4px;
 }
+.btn-danger {
+  background: linear-gradient(45deg, #ff4b5c, #e02424);
+}
 .settings-page button.btn {
   width: auto;
 }
