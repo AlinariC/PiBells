@@ -479,6 +479,16 @@ def update_repo_stream():
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
+@app.post("/api/reboot")
+def reboot_device():
+    """Reboot the host system."""
+    try:
+        subprocess.Popen(["sudo", "reboot"])
+        return {"status": "rebooting"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reboot failed: {e}")
+
+
 def list_audio() -> List[AudioFile]:
     meta = load_audio_meta()
     files: List[AudioFile] = []
