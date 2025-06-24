@@ -81,5 +81,24 @@ document.getElementById('add-form').onsubmit = async (e) => {
 loadAudio();
 loadButtons();
 </script>
+  <footer>
+    <div class="footer-left">
+      <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
+      <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
+    </div>
+    <div id="hostname" class="footer-right"></div>
+  </footer>
+  <script>
+  async function loadHostname() {
+    try {
+      const res = await fetch('/api/network');
+      const data = await res.json();
+      document.getElementById('hostname').textContent = data.hostname;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  loadHostname();
+  </script>
 </body>
 </html>
