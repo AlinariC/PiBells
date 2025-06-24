@@ -21,7 +21,7 @@ PiBells is a lightweight bell scheduler built with FastAPI. Use the web interfac
 - 🔄 Update the software from the admin page
 
 ## Hardware
-- Raspberry Pi 4 Model B (2 GB+ recommended)
+ - Raspberry Pi 4 Model B (4 GB+ recommended)
 - microSD card (8 GB or larger) with Raspberry Pi OS
 - Network connection (Ethernet or Wi-Fi)
 
@@ -40,7 +40,7 @@ Once the service is running, open `http://<raspberrypi-ip>/` in your browser to 
 If you prefer to do things yourself, see [`install.sh`](install.sh) for the commands.
 
 ## Preparing the Raspberry Pi
-1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS (32-bit)** "Recommended" image.
+1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS (64-bit)** "Recommended" image.
 2. In the Imager's advanced options, configure your username, password, network and enable SSH if desired.
 3. Insert the card into the Pi, power it on and wait for it to connect to your network.
 4. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
