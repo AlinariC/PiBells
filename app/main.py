@@ -315,6 +315,25 @@ def delete_device(index: int):
     return devices
 
 
+def check_device(ip: str, timeout: float = 0.5) -> bool:
+    """Return True if the device responds on port 80."""
+    try:
+        with socket.create_connection((ip, 80), timeout=timeout) as sock:
+            sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
+            sock.recv(100)
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/api/devices/status", response_model=Dict[str, bool])
+def devices_status():
+    """Check online status of configured devices."""
+    devices = load_devices()
+    status = {ip: check_device(ip) for ip in devices}
+    return status
+
+
 @app.get("/api/devices/scan", response_model=List[str])
 def scan_devices(network: Optional[str] = None):
     """Discover Barix devices on the specified network."""
