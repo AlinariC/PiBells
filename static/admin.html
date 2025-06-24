@@ -6,7 +6,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body>
+<body class="settings-page">
   <header>
     <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
     <div id="current-time"></div>
@@ -53,8 +53,7 @@
   <button id="check-version"><i class="fas fa-sync"></i> Check for Updates</button>
   <button id="update-btn"><i class="fas fa-download"></i> Update</button>
   <button id="reboot-btn"><i class="fas fa-power-off"></i> Reboot</button>
-  <progress id="update-progress" value="0" max="100" style="display:none;"></progress>
-  <span id="update-step" style="display:none;margin-left:10px;"></span>
+  <div id="update-message" class="update-message" style="display:none;"></div>
   <script>
   async function loadNetwork() {
     const res = await fetch('/api/network');
@@ -222,31 +221,23 @@
 
   document.getElementById('check-version').onclick = loadVersion;
 
-  document.getElementById('update-btn').onclick = () => {
+  document.getElementById('update-btn').onclick = async () => {
     if (!confirm('Update PiBells now?')) return;
     const btn = document.getElementById('update-btn');
-    const progress = document.getElementById('update-progress');
-    const step = document.getElementById('update-step');
+    const msg = document.getElementById('update-message');
     btn.disabled = true;
-    progress.value = 0;
-    progress.style.display = 'inline';
-    step.textContent = '';
-    step.style.display = 'inline';
-    const es = new EventSource('/api/update_stream');
-    es.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if ('progress' in data) progress.value = data.progress;
-      if (data.step) step.textContent = data.step;
-      if (data.complete || data.error) {
-        es.close();
-        progress.style.display = 'none';
-        step.style.display = 'none';
-        btn.disabled = false;
-        if (data.error) alert(data.error);
-        else alert('Update complete');
-        loadVersion();
-      }
-    };
+    msg.style.display = 'none';
+    try {
+      const res = await fetch('/api/update', { method: 'POST' });
+      if (!res.ok) throw new Error('Update failed');
+      msg.innerHTML = '<i class="fas fa-check-circle"></i> Update complete, please reboot system.';
+      msg.style.display = 'inline-flex';
+    } catch (e) {
+      alert(e);
+    } finally {
+      btn.disabled = false;
+      loadVersion();
+    }
   };
 
   document.getElementById('reboot-btn').onclick = async () => {
