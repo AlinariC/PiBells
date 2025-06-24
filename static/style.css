@@ -1,5 +1,5 @@
 :root {
-  --bg-image: linear-gradient(120deg, #f9fbff, #e0f1ff);
+  --bg-image: url('/static/backgrounds/lightbg.png');
   --bg-color: #f9fbff;
   --text-color: #333;
   --header-bg: rgba(255,255,255,0.8);
@@ -18,7 +18,9 @@ body {
   margin: 0;
   padding: 20px 40px;
   box-sizing: border-box;
-  background: var(--bg-image) fixed;
+  background: var(--bg-image) no-repeat center center fixed;
+  background-size: cover;
+  background-color: var(--bg-color);
   color: var(--text-color);
   display: flex;
   flex-direction: column;
@@ -28,7 +30,7 @@ body {
 }
 
 body.dark-mode {
-  --bg-image: linear-gradient(120deg, #1c1f24, #131416);
+  --bg-image: url('/static/backgrounds/darkbg.png');
   --bg-color: #1e1e1e;
   --text-color: #e0e0e0;
   --header-bg: rgba(44,44,44,0.85);
