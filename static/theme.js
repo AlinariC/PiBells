@@ -40,3 +40,9 @@ function initTheme() {
 }
 
 document.addEventListener('DOMContentLoaded', initTheme);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js');
+  });
+}
