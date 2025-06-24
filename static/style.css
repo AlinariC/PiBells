@@ -76,6 +76,13 @@ form {
   margin-bottom: 20px;
 }
 
+#current-time {
+  text-align: center;
+  font-size: 3em;
+  font-family: 'Courier New', monospace;
+  margin-bottom: 20px;
+}
+
 #scan-progress {
   margin-left: 10px;
   width: 200px;
