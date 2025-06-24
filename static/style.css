@@ -252,3 +252,27 @@ footer .footer-right {
   height: 60px;
   margin-bottom: 10px;
 }
+
+/* Settings page fancy buttons */
+.settings-page button {
+  border: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: linear-gradient(45deg, #4facfe, #00f2fe);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  transition: transform 0.1s ease-in-out;
+}
+.settings-page button:hover {
+  transform: scale(1.05);
+}
+
+.update-message {
+  color: green;
+  font-weight: bold;
+  margin-left: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
