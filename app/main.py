@@ -544,6 +544,21 @@ def rename_audio(filename: str, body: AudioName):
     return list_audio()
 
 
+@app.delete("/api/audio/{filename}", response_model=List[AudioFile])
+def delete_audio(filename: str):
+    file_path = AUDIO_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        file_path.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+    meta = load_audio_meta()
+    meta.pop(filename, None)
+    save_audio_meta(meta)
+    return list_audio()
+
+
 class TestRequest(BaseModel):
     sound_file: str
 

@@ -17,6 +17,7 @@ PiBells is a lightweight bell scheduler built with FastAPI. It turns a Raspberry
 - 🔊 Trigger Barix devices or play audio locally
 - 🌐 Scan your network to discover devices automatically
 - 🎵 Upload MP3, WAV, OGG or M4A files as bell sounds
+- 🗑 Delete old audio files to free up space
 - 🔘 Create custom quick-play buttons
 - 🔄 Update the software from the admin page
 - 🔐 Password-protected web interface
