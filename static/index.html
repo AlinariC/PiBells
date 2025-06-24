@@ -12,8 +12,8 @@
       <a href="/admin">Settings</a> |
       <a href="/buttons">Buttons</a>
     </nav>
+    <div id="current-time"></div>
   </header>
-  <div id="current-time"></div>
   <div id="quick-buttons"></div>
   <h1>Bell Schedule</h1>
   <div>
@@ -150,7 +150,12 @@ loadButtons();
 function updateTime() {
   const now = new Date();
   const pad = n => n.toString().padStart(2, '0');
-  const str = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  let hours = now.getHours();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  const str = `${days[now.getDay()]} ${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
   document.getElementById('current-time').textContent = str;
 }
 updateTime();
