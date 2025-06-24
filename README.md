@@ -23,6 +23,7 @@ PiBells is a lightweight bell scheduler built with FastAPI. It turns a Raspberry
 - 🔐 Password-protected web interface
 - 📈 Login banner displays the Pi's IP address
 - ⚙️ Works offline after installation
+- ✨ Modern animated UI with light and dark themes
 
 ## Hardware
 - 🤖 Raspberry Pi 4 Model B (4 GB+ recommended)

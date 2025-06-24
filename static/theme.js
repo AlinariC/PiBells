@@ -4,6 +4,8 @@ function applyTheme(mode) {
     theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
   document.body.classList.toggle('dark-mode', theme === 'dark');
+  document.body.classList.add('theme-transition');
+  setTimeout(() => document.body.classList.remove('theme-transition'), 500);
   localStorage.setItem('theme', mode);
   const select = document.getElementById('theme-select');
   if (select && select.value !== mode) select.value = mode;
