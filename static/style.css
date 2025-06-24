@@ -132,6 +132,11 @@ form {
   width: 200px;
 }
 
+#update-progress {
+  margin-left: 10px;
+  width: 200px;
+}
+
 .audio-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
