@@ -1,8 +1,11 @@
-![PiBells Logo](static/pibells-logo.png)
+<img src="static/pibells-logo.png" alt="PiBells Logo" width="150">
 
 # PiBells
 
-A lightweight bell scheduling server using FastAPI. The web interface lets you pick a time and sound file for each bell. When a bell is due, the server sends play requests to Barix devices on the network.
+[![License: PPPL 1.0](https://img.shields.io/badge/License-PPPL%201.0-blue)](LICENSE)
+[![PixelPacific](https://img.shields.io/badge/PixelPacific-Website-blue)](https://pixelpacific.com)
+
+PiBells is a lightweight bell scheduling server built with FastAPI. The web interface lets you pick a time and sound file for each bell. When a bell is due, the server sends play requests to Barix devices on the network.
 
 ## Requirements
 
@@ -22,10 +25,12 @@ provided in `nginx/pibells.conf`.
 
 Open your browser at `http://<server-ip>/` to manage the schedule.
 
-Bell schedules are stored in `schedule.json`. Multiple schedules can be created and the active one is chosen from the web interface. The server polls this file every 30 seconds and triggers the configured devices for the active schedule.
+Bell schedules are stored in `schedule.json`. Multiple schedules can be created
+and the active one is chosen from the web interface. The server polls this file
+every 30 seconds and triggers the configured devices for the active schedule.
 
-Device IPs are stored in `devices.json` and can be managed from the admin page at `http://<server-ip>/admin`.
-The admin page also provides a **Scan Network** button which automatically discovers
+Device IPs are stored in `devices.json` and can be managed from the admin page at
+`http://<server-ip>/admin`. The admin page also provides a **Scan Network** button which automatically discovers
 Barix devices on the local subnet and adds them to the list. If your devices are
 on a different subnet you can enter the network prefix (e.g. `192.168.2`) before
 scanning to search that network instead.
@@ -115,5 +120,9 @@ script are shown below for reference.
    sudo systemctl restart nginx
    ```
 
-PiBells will now automatically start on boot and be available via nginx at
-`http://<raspberrypi-ip>/`.
+PiBells will now automatically start on boot and be available via nginx at `http://<raspberrypi-ip>/`.
+
+---
+
+Distributed under the [PixelPacific Public License (PPPL 1.0)](LICENSE).
+Learn more about PixelPacific at [pixelpacific.com](https://pixelpacific.com).
