@@ -6,11 +6,14 @@ from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Dict, List, Optional, Iterable, Tuple
 from urllib import request, parse
+import subprocess
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from . import __version__
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SCHEDULE_FILE = BASE_DIR / "schedule.json"
@@ -367,6 +370,38 @@ def scan_devices_stream(network: Optional[str] = None):
 def network_info():
     """Return network information such as the current IP address and hostname."""
     return {"ip": get_local_ip(), "hostname": socket.gethostname()}
+
+
+def get_latest_version() -> str:
+    """Fetch the latest version string from GitHub."""
+    url = (
+        "https://raw.githubusercontent.com/alinaric/PiBells/main/app/__init__.py"
+    )
+    try:
+        with request.urlopen(url, timeout=5) as resp:
+            text = resp.read().decode()
+        for line in text.splitlines():
+            if line.startswith("__version__"):
+                return line.split("=")[1].strip().strip("'\"")
+    except Exception as e:
+        print("Failed to fetch latest version:", e)
+    return __version__
+
+
+@app.get("/api/version")
+def version_info():
+    """Return current and latest PiBells version."""
+    return {"current": __version__, "latest": get_latest_version()}
+
+
+@app.post("/api/update")
+def update_repo():
+    """Pull the latest code from GitHub."""
+    try:
+        subprocess.run(["git", "-C", str(BASE_DIR), "pull"], check=True)
+        return {"status": "updated"}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Update failed: {e}")
 
 
 def list_audio() -> List[AudioFile]:
