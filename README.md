@@ -1,166 +1,61 @@
-<img src="static/pibells-logo.png" alt="PiBells Logo" width="150">
+<p align="center">
+  <img src="static/pibells-logo.png" width="160" alt="PiBells logo"/>
+</p>
 
-# PiBells
+<h1 align="center">PiBells</h1>
 
-[![License: PPPL 1.0](https://img.shields.io/badge/License-PPPL%201.0-blue)](LICENSE)
-[![PixelPacific](https://img.shields.io/badge/PixelPacific-Website-blue)](https://pixelpacific.com)
+<p align="center">
+  <b>Network bell scheduling for Raspberry Pi</b><br>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PPPL%201.0-blue" alt="License"></a>
+  <a href="https://pixelpacific.com"><img src="https://img.shields.io/badge/PixelPacific-Website-blue" alt="PixelPacific"></a>
+</p>
 
-PiBells is a lightweight bell scheduling server built with FastAPI. The web interface lets you pick a time and sound file for each bell. When a bell is due, the server sends play requests to Barix devices on the network and plays the sound through the local sound card.
+PiBells is a lightweight bell scheduler built with FastAPI. Use the web interface to create schedules, upload sounds and manage your Barix devices. Perfect for schools or facilities needing a simple network bell system.
 
-## Requirements
+## Features
+- 📅 Create multiple schedules from your browser
+- 🔊 Trigger Barix devices or play audio locally
+- 🌐 Scan your network to discover devices automatically
+- 🎵 Upload MP3, WAV, OGG or M4A files as bell sounds
+- 🔘 Create custom quick-play buttons
+- 🔄 Update the software from the admin page
 
-### Hardware
-* Raspberry Pi 4 Model B (2&nbsp;GB or more recommended)
-* microSD card (8&nbsp;GB or larger) with Raspberry Pi OS
-* Network connection (Ethernet or Wi‑Fi)
+## Hardware
+- Raspberry Pi 4 Model B (2 GB+ recommended)
+- microSD card (8 GB or larger) with Raspberry Pi OS
+- Network connection (Ethernet or Wi-Fi)
 
-### Software
-* Python 3 with FastAPI and Uvicorn (both included in this environment)
-
-## Running
-
-Start the server with:
+## Installation
+Run the install script on your Pi with `sudo`:
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+curl -L https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
 ```
 
-To expose the application on the standard HTTP port configure nginx to
-reverse proxy requests to the FastAPI server. An example configuration is
-provided in `nginx/pibells.conf`.
+The script installs dependencies, sets up a virtual environment, clones the repo and creates a `systemd` service so PiBells starts on boot. You can run the same command again at any time to update.
 
-Open your browser at `http://<server-ip>/` to manage the schedule.
+Once the service is running, open `http://<raspberrypi-ip>/` in your browser to log in and configure your bells.
 
-Bell schedules are stored in `schedule.json`. Multiple schedules can be created
-and the active one is chosen from the web interface. The server polls this file
-every 30 seconds and triggers the configured devices for the active schedule.
-
-Device IPs are stored in `devices.json` and can be managed from the admin page at
-`http://<server-ip>/admin`. The admin page also provides a **Scan Network** button which automatically discovers
-Barix devices on the local subnet and adds them to the list. If your devices are
-on a different subnet you can enter the network prefix (e.g. `192.168.2`) before
-scanning to search that network instead.
-
-Audio files used for bells can be uploaded from the admin page as well. Uploaded
-files are stored in the `audio/` directory and are selectable when creating
-schedule entries.
+### Manual steps
+If you prefer to do things yourself, see [`install.sh`](install.sh) for the commands.
 
 ## Preparing the Raspberry Pi
-
-1. Flash **Raspberry Pi OS Lite** (64‑bit recommended) to the microSD card using
-   Raspberry Pi Imager or a similar tool.
+1. Flash **Raspberry Pi OS Lite** (64-bit recommended) to the microSD card using Raspberry Pi Imager or a similar tool.
 2. Insert the card into the Pi, connect it to your network and power it on.
-3. (Optional) Enable SSH by placing an empty file named `ssh` on the boot
-   partition so you can log in remotely.
-4. Complete the first‑boot setup and ensure the Pi has internet access.
+3. (Optional) Enable SSH by placing an empty file named `ssh` on the boot partition so you can log in remotely.
+4. Complete the first-boot setup and ensure the Pi has internet access.
 5. Update the system packages:
 
    ```bash
    sudo apt update && sudo apt upgrade -y
    ```
 
-6. Log in as the user that should run PiBells (typically `pi`) and proceed to run
-   the install script below.
-
-## Permanent Installation on a Raspberry Pi 4
-
-PiBells can run automatically at boot using a systemd service. The easiest way
-to set this up is with the provided `install.sh` script. Download the script
-directly and run it with `sudo`:
-
-```bash
-curl -L https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
-```
-
-Or with `wget`:
-
-```bash
-wget -O - https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
-```
-
-The script installs required packages, clones/updates the repository for the
-`pibells` user and creates a `pibells.service` file in `/etc/systemd/system`. The
-service is then enabled and started so PiBells launches automatically on boot.
-
-### Updating
-
-Run the same command again to update PiBells:
-
-```bash
-curl -L https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
-```
-
-After installation you can also update from the admin page by clicking the **Update** button under the *Software* section.
-
-If you prefer to perform these steps manually, the commands executed by the
-script are shown below for reference.
-
-1. **Install dependencies** (FastAPI, Uvicorn and nginx) if they are not already present:
-
-   ```bash
-   sudo apt update
-   sudo apt install python3 python3-pip python3-venv git nginx -y
-   python3 -m venv ~/pibells-venv
-   source ~/pibells-venv/bin/activate
-   pip install fastapi uvicorn python-multipart
-   ```
-
-2. **Clone the repository** to the home directory of the `pibells` user:
-
-   ```bash
-   git clone https://github.com/alinaric/PiBells.git ~/PiBells
-   cd ~/PiBells
-   ```
-
-3. **Fix directory permissions** so the `pibells` user can update the repo:
-
-   ```bash
-   sudo chown -R pibells:pibells ~/PiBells
-   ```
-
-4. **Create the service file** `/etc/systemd/system/pibells.service` with the following
-   contents:
-
-   ```ini
-   [Unit]
-   Description=PiBells Server
-   After=network.target
-
-   [Service]
-   User=pibells
-   WorkingDirectory=/home/pibells/PiBells
-   ExecStart=/home/pibells/pibells-venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
-   Restart=always
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-5. **Enable and start** the service:
-
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable pibells
-   sudo systemctl start pibells
-   ```
-
-6. **Configure nginx** to proxy requests on port 80 to the FastAPI server:
-
-   ```bash
-   sudo cp nginx/pibells.conf /etc/nginx/sites-available/pibells
-   sudo ln -sf /etc/nginx/sites-available/pibells /etc/nginx/sites-enabled/pibells
-   sudo rm -f /etc/nginx/sites-enabled/default
-   sudo systemctl restart nginx
-   ```
-
-PiBells will now automatically start on boot and be available via nginx at `http://<raspberrypi-ip>/`.
+6. Log in as the user that should run PiBells (typically `pi`) and run the install script above.
 
 ## Versioning
-
-Each PiBells release defines a `__version__` value in `app/__init__.py`. The
-admin page displays this version and checks GitHub for the most recent one.
+The current version is defined in [`app/__init__.py`](app/__init__.py). The admin page checks GitHub for updates and lets you upgrade with a single click.
 
 ---
 
-Distributed under the [PixelPacific Public License (PPPL 1.0)](LICENSE).
+Distributed under the [PixelPacific Public License (PPPL 1.0)](LICENSE).  
 Learn more about PixelPacific at [pixelpacific.com](https://pixelpacific.com).
