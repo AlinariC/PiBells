@@ -9,6 +9,10 @@ header {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  background: white;
+  padding: 10px 20px;
 }
 header img.logo {
   height: 50px;
@@ -27,6 +31,9 @@ table {
   width: 100%;
   margin-top: 20px;
   background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  overflow: hidden;
 }
 #schedule-grid {
   display: flex;
@@ -38,6 +45,8 @@ table {
   background: white;
   padding: 10px;
   border: 1px solid #ccc;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
 .schedule-day ul {
   list-style: none;
