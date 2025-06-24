@@ -40,17 +40,10 @@ Once the service is running, open `http://<raspberrypi-ip>/` in your browser to 
 If you prefer to do things yourself, see [`install.sh`](install.sh) for the commands.
 
 ## Preparing the Raspberry Pi
-1. Flash **Raspberry Pi OS Lite** (64-bit recommended) to the microSD card using Raspberry Pi Imager or a similar tool.
-2. Insert the card into the Pi, connect it to your network and power it on.
-3. (Optional) Enable SSH by placing an empty file named `ssh` on the boot partition so you can log in remotely.
-4. Complete the first-boot setup and ensure the Pi has internet access.
-5. Update the system packages:
-
-   ```bash
-   sudo apt update && sudo apt upgrade -y
-   ```
-
-6. Log in as the user that should run PiBells (typically `pi`) and run the install script above.
+1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS (32-bit)** "Recommended" image.
+2. In the Imager's advanced options, configure your username, password, network and enable SSH if desired.
+3. Insert the card into the Pi, power it on and wait for it to connect to your network.
+4. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
 
 ## Versioning
 The current version is defined in [`app/__init__.py`](app/__init__.py). The admin page checks GitHub for updates and lets you upgrade with a single click.
