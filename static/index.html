@@ -193,8 +193,15 @@ function updateTime() {
   document.getElementById('current-time').textContent = str;
 }
 updateTime();
-setInterval(updateTime, 1000);
+  setInterval(updateTime, 1000);
   </script>
+  <div class="theme-switch">
+    <select id="theme-select">
+      <option value="auto">Auto</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </div>
   <footer>
     <div class="footer-left">
       <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
@@ -214,5 +221,6 @@ setInterval(updateTime, 1000);
   }
   loadHostname();
   </script>
+  <script src="/static/theme.js"></script>
 </body>
 </html>

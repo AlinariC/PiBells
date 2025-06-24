@@ -106,6 +106,13 @@ document.getElementById('add-form').onsubmit = async (e) => {
   updateTime();
   setInterval(updateTime, 1000);
 </script>
+  <div class="theme-switch">
+    <select id="theme-select">
+      <option value="auto">Auto</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </div>
   <footer>
     <div class="footer-left">
       <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
@@ -125,5 +132,6 @@ document.getElementById('add-form').onsubmit = async (e) => {
   }
   loadHostname();
   </script>
+  <script src="/static/theme.js"></script>
 </body>
 </html>
