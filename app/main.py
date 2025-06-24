@@ -130,7 +130,9 @@ def discover_barix_devices_iter(
 
     The returned iterator yields a tuple ``(index, ip)`` for every host that is
     checked where ``index`` is the current host number (1-254) and ``ip`` is the
-    discovered device IP or ``None`` if no device was found at that address.
+    discovered device IP or ``None`` if no device was found at that address. The
+    scan looks for hosts with port 2020 open, which is the port used by Barix
+    devices to stream audio.
     """
     if network is None:
         local_ip = get_local_ip()
@@ -150,11 +152,8 @@ def discover_barix_devices_iter(
         target = f"{subnet}.{i}"
         found_ip = None
         try:
-            with socket.create_connection((target, 80), timeout=timeout) as sock:
-                sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
-                data = sock.recv(200).decode("utf-8", errors="ignore")
-                if "Barix" in data:
-                    found_ip = target
+            with socket.create_connection((target, 2020), timeout=timeout):
+                found_ip = target
         except Exception:
             pass
         yield i, found_ip
@@ -394,12 +393,10 @@ def delete_device(index: int):
 
 
 def check_device(ip: str, timeout: float = 0.5) -> bool:
-    """Return True if the device responds on port 80."""
+    """Return True if the device responds on port 2020."""
     try:
-        with socket.create_connection((ip, 80), timeout=timeout) as sock:
-            sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
-            sock.recv(100)
-        return True
+        with socket.create_connection((ip, 2020), timeout=timeout):
+            return True
     except Exception:
         return False
 
