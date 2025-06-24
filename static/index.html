@@ -40,17 +40,6 @@ function formatTime12h(str) {
   return `${hour.toString().padStart(2, '0')}:${minute} ${ampm}`;
 }
 
-function to24h(str) {
-  const m = str.trim().match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
-  if (!m) return null;
-  let h = parseInt(m[1], 10);
-  const min = m[2];
-  const ampm = m[3].toUpperCase();
-  if (h < 1 || h > 12) return null;
-  if (ampm === 'PM' && h !== 12) h += 12;
-  if (ampm === 'AM' && h === 12) h = 0;
-  return `${h.toString().padStart(2, '0')}:${min}`;
-}
 async function loadButtons() {
   const res = await fetch('/api/buttons');
   const data = await res.json();
@@ -116,8 +105,7 @@ async function loadSchedule() {
     const form = document.createElement('form');
     form.className = 'add-event-form';
     const t = document.createElement('input');
-    t.type = 'text';
-    t.placeholder = 'HH:MM AM/PM';
+    t.type = 'time';
     t.required = true;
     const sel = document.createElement('select');
     audioFiles.forEach(file => {
@@ -135,9 +123,9 @@ async function loadSchedule() {
     form.appendChild(addBtn);
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const val = to24h(t.value);
+      const val = t.value;
       if (!val) {
-        alert('Invalid time format. Use HH:MM AM/PM');
+        alert('Please select a time');
         return;
       }
       await fetch('/api/schedule', {
