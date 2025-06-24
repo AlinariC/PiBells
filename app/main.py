@@ -429,16 +429,14 @@ def network_info():
 
 
 def get_latest_version() -> str:
-    """Fetch the latest version string from GitHub."""
-    url = (
-        "https://raw.githubusercontent.com/alinaric/PiBells/main/app/__init__.py"
-    )
+    """Fetch the latest released version tag from GitHub."""
+    url = "https://api.github.com/repos/alinaric/PiBells/releases/latest"
     try:
         with request.urlopen(url, timeout=5) as resp:
-            text = resp.read().decode()
-        for line in text.splitlines():
-            if line.startswith("__version__"):
-                return line.split("=")[1].strip().strip("'\"")
+            data = json.load(resp)
+        tag = data.get("tag_name")
+        if tag:
+            return tag.lstrip("v")
     except Exception as e:
         print("Failed to fetch latest version:", e)
     return __version__
