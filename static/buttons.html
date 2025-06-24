@@ -16,7 +16,15 @@
     <label>Name: <input type="text" id="name" required></label>
     <label>Sound: <select id="sound"></select></label>
     <label>Color: <input type="color" id="color" value="#ff0000"></label>
-    <label>Icon: <input type="text" id="icon" placeholder="emoji or icon"></label>
+    <label>Icon:
+      <select id="icon">
+        <option value="">None</option>
+        <option value="fa-bell">Bell</option>
+        <option value="fa-fire">Fire</option>
+        <option value="fa-exclamation-triangle">Warning</option>
+        <option value="fa-ambulance">Ambulance</option>
+      </select>
+    </label>
     <button type="submit"><i class="fas fa-plus"></i> Add</button>
   </form>
   <table id="buttons">
@@ -49,7 +57,8 @@ async function loadButtons() {
   data.forEach((btn, i) => {
     const tr = document.createElement('tr');
     const sound = audioMap[btn.sound_file] || btn.sound_file;
-    tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${btn.icon}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
+    const iconHtml = btn.icon ? `<i class="fas ${btn.icon}"></i>` : '';
+    tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${iconHtml}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
     const del = document.createElement('button');
     del.innerHTML = '<i class="fas fa-trash"></i> Delete';
     del.onclick = async () => {
