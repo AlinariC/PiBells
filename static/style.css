@@ -7,12 +7,15 @@ body {
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   margin-bottom: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   background: white;
   padding: 10px 20px;
+}
+
+header nav {
+  margin-left: auto;
 }
 header img.logo {
   height: 50px;
@@ -89,7 +92,8 @@ form {
 }
 
 #current-time {
-  text-align: right;
+  flex: 1;
+  text-align: center;
   font-size: 3em;
   font-family: 'Courier New', monospace;
   margin: 0;
