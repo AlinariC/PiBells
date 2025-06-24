@@ -365,8 +365,8 @@ def scan_devices_stream(network: Optional[str] = None):
 
 @app.get("/api/network")
 def network_info():
-    """Return network information such as the current IP address."""
-    return {"ip": get_local_ip()}
+    """Return network information such as the current IP address and hostname."""
+    return {"ip": get_local_ip(), "hostname": socket.gethostname()}
 
 
 def list_audio() -> List[AudioFile]:

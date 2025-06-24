@@ -135,3 +135,35 @@ form {
 .status-icon {
   font-size: 1.2em;
 }
+
+footer {
+  margin-top: 40px;
+  padding: 10px 20px;
+  background: #222;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+}
+
+footer .footer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+footer img.footer-logo {
+  height: 30px;
+}
+
+footer a {
+  color: #fff;
+  text-decoration: underline;
+}
+
+footer .footer-right {
+  margin-left: auto;
+  text-align: right;
+}
