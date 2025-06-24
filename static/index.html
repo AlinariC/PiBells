@@ -204,18 +204,15 @@ function updateTime() {
 updateTime();
   setInterval(updateTime, 1000);
   </script>
-  <div class="theme-switch">
-    <label for="theme-select">Theme:</label>
-    <select id="theme-select">
-      <option value="auto">Auto</option>
-      <option value="light">Light</option>
-      <option value="dark">Dark</option>
-    </select>
-  </div>
   <footer>
     <div class="footer-left">
       <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
       <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
+    </div>
+    <div class="theme-switch">
+      <button class="theme-btn" data-theme="light" title="Light">🌞</button>
+      <button class="theme-btn" data-theme="auto" title="Auto">🌓</button>
+      <button class="theme-btn" data-theme="dark" title="Dark">🌜</button>
     </div>
     <div id="hostname" class="footer-right"></div>
   </footer>

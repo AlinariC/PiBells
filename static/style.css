@@ -203,17 +203,18 @@ footer .footer-right {
 }
 
 .theme-switch {
-  margin: 20px auto;
-  text-align: center;
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
-.theme-switch label {
-  margin-right: 5px;
-  font-size: 0.9em;
+.theme-switch .theme-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2em;
 }
-.theme-switch select {
-  font-size: 0.9em;
-  padding: 4px 8px;
-  border-radius: 4px;
+.theme-switch .theme-btn.active {
+  transform: scale(1.2);
 }
 
 .network-info {
