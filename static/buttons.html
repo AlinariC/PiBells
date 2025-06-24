@@ -23,17 +23,20 @@
     <tbody></tbody>
   </table>
 <script>
+let audioMap = {};
 async function loadAudio() {
   const res = await fetch('/api/audio');
   const data = await res.json();
   const select = document.getElementById('sound');
   if (!select) return;
   select.innerHTML = '';
-  data.forEach(name => {
+  audioMap = {};
+  data.forEach(file => {
     const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
+    opt.value = file.file;
+    opt.textContent = file.name;
     select.appendChild(opt);
+    audioMap[file.file] = file.name;
   });
 }
 
@@ -44,7 +47,8 @@ async function loadButtons() {
   tbody.innerHTML = '';
   data.forEach((btn, i) => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${btn.name}</td><td>${btn.sound_file}</td><td>${btn.icon}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
+    const sound = audioMap[btn.sound_file] || btn.sound_file;
+    tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${btn.icon}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
     const del = document.createElement('button');
     del.textContent = 'Delete';
     del.onclick = async () => {
