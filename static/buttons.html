@@ -107,6 +107,14 @@ document.getElementById('add-form').onsubmit = async (e) => {
   updateTime();
   setInterval(updateTime, 1000);
 </script>
+  <div class="theme-switch">
+    <label for="theme-select">Theme:</label>
+    <select id="theme-select">
+      <option value="auto">Auto</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </div>
   <footer>
     <div class="footer-left">
       <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />

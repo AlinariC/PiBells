@@ -22,5 +22,14 @@ if (params.get('error')) {
   document.getElementById('error-msg').textContent = 'Invalid username or password';
 }
 </script>
+<div class="theme-switch">
+  <label for="theme-select">Theme:</label>
+  <select id="theme-select">
+    <option value="auto">Auto</option>
+    <option value="light">Light</option>
+    <option value="dark">Dark</option>
+  </select>
+</div>
+<script src="/static/theme.js"></script>
 </body>
 </html>
