@@ -33,11 +33,13 @@
     <input type="text" id="audio-name" placeholder="Name" required>
     <button type="submit"><i class="fas fa-upload"></i> Upload</button>
   </form>
-  <ul id="audio-list"></ul>
+  <div id="audio-list" class="audio-grid"></div>
 
   <h2>Test</h2>
-  <label>Sound file: <select id="test-sound"></select></label>
-  <button id="test-play"><i class="fas fa-play"></i> Play</button>
+  <div class="test-section">
+    <label>Sound file: <select id="test-sound"></select></label>
+    <button id="test-play"><i class="fas fa-play"></i> Play</button>
+  </div>
   <script>
   async function loadNetwork() {
     const res = await fetch('/api/network');
@@ -116,9 +118,25 @@
     const testSelect = document.getElementById('test-sound');
     if (testSelect) testSelect.innerHTML = '';
     data.forEach(file => {
-      const li = document.createElement('li');
-      li.textContent = file.name;
-      list.appendChild(li);
+      const div = document.createElement('div');
+      div.className = 'audio-item';
+      const span = document.createElement('span');
+      span.textContent = file.name;
+      div.appendChild(span);
+      const edit = document.createElement('button');
+      edit.innerHTML = '<i class="fas fa-edit"></i>';
+      edit.onclick = async () => {
+        const name = prompt('New name:', file.name);
+        if (!name) return;
+        await fetch('/api/audio/' + encodeURIComponent(file.file), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        loadAudio();
+      };
+      div.appendChild(edit);
+      list.appendChild(div);
       if (testSelect) {
         const opt = document.createElement('option');
         opt.value = file.file;
