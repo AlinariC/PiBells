@@ -9,7 +9,13 @@ PiBells is a lightweight bell scheduling server built with FastAPI. The web inte
 
 ## Requirements
 
-* Python 3 with FastAPI and Uvicorn (both included in this environment).
+### Hardware
+* Raspberry Pi 4 Model B (2&nbsp;GB or more recommended)
+* microSD card (8&nbsp;GB or larger) with Raspberry Pi OS
+* Network connection (Ethernet or Wi‑Fi)
+
+### Software
+* Python 3 with FastAPI and Uvicorn (both included in this environment)
 
 ## Running
 
@@ -38,6 +44,23 @@ scanning to search that network instead.
 Audio files used for bells can be uploaded from the admin page as well. Uploaded
 files are stored in the `audio/` directory and are selectable when creating
 schedule entries.
+
+## Preparing the Raspberry Pi
+
+1. Flash **Raspberry Pi OS Lite** (64‑bit recommended) to the microSD card using
+   Raspberry Pi Imager or a similar tool.
+2. Insert the card into the Pi, connect it to your network and power it on.
+3. (Optional) Enable SSH by placing an empty file named `ssh` on the boot
+   partition so you can log in remotely.
+4. Complete the first‑boot setup and ensure the Pi has internet access.
+5. Update the system packages:
+
+   ```bash
+   sudo apt update && sudo apt upgrade -y
+   ```
+
+6. Log in as the user that should run PiBells (typically `pi`) and proceed to run
+   the install script below.
 
 ## Permanent Installation on a Raspberry Pi 4
 
