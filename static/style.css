@@ -349,6 +349,20 @@ button.btn {
 .settings-page button.btn {
   width: auto;
 }
+
+/* Match heading styles on settings page */
+.settings-page h1,
+.settings-page h2 {
+  font-size: 1.4em;
+  margin-top: 30px;
+  margin-bottom: 10px;
+}
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--table-border);
+  margin: 30px 0;
+}
 button.btn:hover {
   transform: scale(1.05);
   box-shadow: 0 6px 14px rgba(0,0,0,0.3);
