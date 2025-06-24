@@ -12,7 +12,7 @@ fi
 
 apt-get update
 apt-get upgrade -y
-apt-get install -y python3 python3-pip python3-venv git nginx neofetch
+apt-get install -y python3 python3-pip python3-venv git nginx neofetch ffmpeg alsa-utils
 
 TARGET_USER=${SUDO_USER:-pibells}
 HOME_DIR=$(eval echo "~$TARGET_USER")
