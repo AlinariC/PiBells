@@ -202,14 +202,32 @@ form select {
   margin: 0;
 }
 
-#scan-progress {
-  margin-left: 10px;
-  width: 200px;
-}
-
+#scan-progress,
 #update-progress {
   margin-left: 10px;
   width: 200px;
+  height: 16px;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+#scan-progress::-webkit-progress-bar,
+#update-progress::-webkit-progress-bar {
+  background: var(--table-bg);
+}
+
+#scan-progress::-webkit-progress-value,
+#update-progress::-webkit-progress-value {
+  background: linear-gradient(45deg, var(--accent-start), var(--accent-end));
+  transition: width 0.3s ease;
+}
+
+#scan-progress::-moz-progress-bar,
+#update-progress::-moz-progress-bar {
+  background: linear-gradient(45deg, var(--accent-start), var(--accent-end));
+  transition: width 0.3s ease;
 }
 
 .audio-grid {
