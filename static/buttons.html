@@ -4,15 +4,14 @@
   <meta charset="UTF-8" />
   <title>Button Configuration</title>
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
   <header>
     <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
     <div id="current-time"></div>
     <nav>
-      <a href="/"><i class="fas fa-arrow-left"></i> Back to Schedule</a> |
-      <a href="/logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
+      <a href="/"><span class="icon">←</span> Back to Schedule</a> |
+      <a href="/logout"><span class="icon">🚪</span> Logout</a>
     </nav>
   </header>
   <h1>Quick Buttons</h1>
@@ -23,13 +22,13 @@
     <label>Icon:
       <select id="icon">
         <option value="">None</option>
-        <option value="fa-bell">Bell</option>
-        <option value="fa-fire">Fire</option>
-        <option value="fa-exclamation-triangle">Warning</option>
-        <option value="fa-ambulance">Ambulance</option>
+        <option value="🔔">Bell</option>
+        <option value="🔥">Fire</option>
+        <option value="⚠️">Warning</option>
+        <option value="🚑">Ambulance</option>
       </select>
     </label>
-    <button type="submit"><i class="fas fa-plus"></i> Add</button>
+    <button type="submit" class="btn"><span class="icon">➕</span> Add</button>
   </form>
   <table id="buttons">
     <thead><tr><th>Name</th><th>Sound</th><th>Icon</th><th>Color</th><th>Actions</th></tr></thead>
@@ -58,13 +57,21 @@ async function loadButtons() {
   const data = await res.json();
   const tbody = document.querySelector('#buttons tbody');
   tbody.innerHTML = '';
+  const iconMap = {
+    'fa-bell': '🔔',
+    'fa-fire': '🔥',
+    'fa-exclamation-triangle': '⚠️',
+    'fa-ambulance': '🚑'
+  };
   data.forEach((btn, i) => {
     const tr = document.createElement('tr');
     const sound = audioMap[btn.sound_file] || btn.sound_file;
-    const iconHtml = btn.icon ? `<i class="fas ${btn.icon}"></i>` : '';
+    const icon = iconMap[btn.icon] || btn.icon || '';
+    const iconHtml = icon ? `<span class="icon">${icon}</span>` : '';
     tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${iconHtml}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
     const del = document.createElement('button');
-    del.innerHTML = '<i class="fas fa-trash"></i> Delete';
+    del.className = 'btn';
+    del.innerHTML = '<span class="icon">🗑</span> Delete';
     del.onclick = async () => {
       await fetch('/api/buttons/' + i, { method: 'DELETE' });
       loadButtons();
