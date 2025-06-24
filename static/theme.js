@@ -10,12 +10,13 @@ function applyTheme(mode) {
 }
 
 function initTheme() {
-  const select = document.getElementById('theme-select');
-  if (!select) return;
   const saved = localStorage.getItem('theme') || 'auto';
   applyTheme(saved);
-  select.value = saved;
-  select.addEventListener('change', (e) => applyTheme(e.target.value));
+  const select = document.getElementById('theme-select');
+  if (select) {
+    select.value = saved;
+    select.addEventListener('change', (e) => applyTheme(e.target.value));
+  }
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (localStorage.getItem('theme') === 'auto') applyTheme('auto');
   });
