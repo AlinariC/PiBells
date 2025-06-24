@@ -5,7 +5,7 @@ import time
 from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Dict, List, Optional, Iterable, Tuple
-from urllib import request, parse
+from urllib import request
 import subprocess
 import secrets
 import pwd
@@ -260,12 +260,31 @@ def trigger_bell(sound_file: str):
         print("No audio player found (ffplay/aplay)")
 
     def send(device: str):
-        url = f"http://{device}/play"
-        data = parse.urlencode({"file": sound_file}).encode()
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-re",
+            "-i",
+            str(path),
+            "-f",
+            "mp3",
+            "-",
+        ]
+        nc_cmd = ["nc", device, "2020"]
         try:
-            request.urlopen(url, data=data, timeout=2)
-        except Exception as e:
-            print(f"Failed to contact {device}: {e}")
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+            nc_proc = subprocess.Popen(
+                nc_cmd,
+                stdin=ffmpeg_proc.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            ffmpeg_proc.stdout.close()
+            nc_proc.communicate()
+            ffmpeg_proc.wait()
+        except FileNotFoundError as e:
+            print(f"Failed to stream to {device}: {e}")
 
     # Start local playback and send requests concurrently
     threads = [threading.Thread(target=send, args=(d,), daemon=True) for d in devices]
