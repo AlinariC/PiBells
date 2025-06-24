@@ -55,7 +55,7 @@ header {
 header nav {
   display: none;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   position: absolute;
   top: 60px;
   right: 20px;
@@ -72,8 +72,8 @@ header nav.open {
 
 #menu-toggle {
   margin-left: auto;
-  width: 30px;
-  height: 22px;
+  width: 40px;
+  height: 30px;
   position: relative;
   border: none;
   background: none;
@@ -104,7 +104,7 @@ header nav.open {
   transform: translateY(-9px) rotate(-45deg);
 }
 header img.logo {
-  height: 50px;
+  height: 60px;
 }
 a {
   color: var(--link-color);
@@ -133,7 +133,7 @@ table {
 .schedule-day {
   flex: 1;
   background: var(--table-bg);
-  padding: 10px;
+  padding: 15px;
   border: 1px solid var(--table-border);
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
@@ -146,18 +146,21 @@ table {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin: 4px 0;
+  margin: 8px 0;
 }
 th, td {
   border: 1px solid var(--table-border);
-  padding: 8px;
+  padding: 12px;
   text-align: left;
 }
 th {
   background: var(--th-bg);
 }
 button {
-  padding: 5px 10px;
+  padding: 10px 16px;
+  margin: 4px;
+  min-width: 44px;
+  min-height: 44px;
 }
 button .icon {
   margin-right: 4px;
@@ -165,13 +168,25 @@ button .icon {
 form {
   margin-top: 20px;
 }
+form input,
+form select {
+  padding: 10px;
+  font-size: 1em;
+  margin: 4px 8px 4px 0;
+}
+#schedule-select,
+#new-schedule {
+  padding: 10px;
+  font-size: 1em;
+  margin-right: 8px;
+}
 #quick-buttons button {
   margin-right: 10px;
   color: #fff;
   border: none;
   cursor: pointer;
-  padding: 10px 20px;
-  font-size: 1.2em;
+  padding: 14px 24px;
+  font-size: 1.3em;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
@@ -200,13 +215,13 @@ form {
 .audio-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
-  margin-top: 10px;
+  gap: 15px;
+  margin-top: 15px;
 }
 
 .audio-item {
   background: var(--table-bg);
-  padding: 10px;
+  padding: 15px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   display: flex;
@@ -220,13 +235,13 @@ form {
 
 .test-section {
   background: var(--table-bg);
-  padding: 10px;
+  padding: 15px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 12px;
+  margin-top: 15px;
 }
 
 .status-icon {
@@ -273,11 +288,11 @@ footer .footer-right {
 
 .theme-switch {
   display: flex;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
   margin: 0 auto;
   background: var(--table-bg);
-  padding: 4px 10px;
+  padding: 6px 14px;
   border-radius: 20px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
@@ -286,7 +301,7 @@ footer .footer-right {
   border: none;
   cursor: pointer;
   font-size: 1.2em;
-  padding: 4px;
+  padding: 6px;
   border-radius: 50%;
   transition: background 0.3s, transform 0.3s;
 }
@@ -299,20 +314,20 @@ footer .footer-right {
 
 .network-info {
   background: var(--table-bg);
-  padding: 10px;
+  padding: 15px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 12px;
+  margin-top: 15px;
 }
 
 .login-container {
   max-width: 300px;
   margin: 100px auto;
   background: var(--table-bg);
-  padding: 20px;
+  padding: 30px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   text-align: center;
@@ -320,13 +335,13 @@ footer .footer-right {
 
 .login-container label {
   display: block;
-  margin: 10px 0;
+  margin: 15px 0;
 }
 
 .login-container input[type="text"],
 .login-container input[type="password"] {
   width: 100%;
-  padding: 8px;
+  padding: 12px;
 }
 
 .login-logo {
@@ -337,7 +352,7 @@ footer .footer-right {
 /* Reusable fancy button style */
 button.btn {
   border: none;
-  padding: 8px 16px;
+  padding: 10px 20px;
   border-radius: 20px;
   background: linear-gradient(45deg, var(--accent-start), var(--accent-end));
   color: #fff;
