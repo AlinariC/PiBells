@@ -12,7 +12,7 @@ fi
 
 apt-get update
 apt-get upgrade -y
-apt-get install -y python3 python3-pip python3-venv git nginx
+apt-get install -y python3 python3-pip python3-venv git nginx neofetch
 
 TARGET_USER=${SUDO_USER:-pibells}
 HOME_DIR=$(eval echo "~$TARGET_USER")
@@ -79,5 +79,45 @@ NGINX
 ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/pibells
 rm -f /etc/nginx/sites-enabled/default
 systemctl restart nginx
+
+# install PiBells login banner
+BANNER_DIR=/etc/pibells
+mkdir -p "$BANNER_DIR"
+cat > "$BANNER_DIR/pibells-ascii.txt" <<'EOF'
+       _____
+      /     \
+     /       \
+    |  () ()  |
+     \   ^   /
+      |_____|
+      /     \
+     /_______\
+EOF
+
+cat > /usr/local/bin/pibells-banner.sh <<'EOF'
+#!/usr/bin/env bash
+IP=$(hostname -I | awk '{print $1}')
+neofetch --ascii "/etc/pibells/pibells-ascii.txt" --color_blocks off --stdout > /etc/issue
+echo "IP Address: $IP" >> /etc/issue
+EOF
+chmod +x /usr/local/bin/pibells-banner.sh
+
+cat > /etc/systemd/system/pibells-banner.service <<'EOF'
+[Unit]
+Description=PiBells login banner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pibells-banner.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable pibells-banner
+systemctl start pibells-banner
 
 echo "PiBells installation complete. Service is running."
