@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login - PiBells</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="login-container">
+    <img src="/static/pibells-logo.png" alt="PiBells logo" class="login-logo" />
+    <form id="login-form" method="post" action="/login">
+      <label>Username:<br><input type="text" name="username" required></label>
+      <label>Password:<br><input type="password" name="password" required></label>
+      <label class="remember"><input type="checkbox" name="remember"> Remember me</label>
+      <button type="submit">Login</button>
+    </form>
+    <div id="error-msg" style="color:red;"></div>
+  </div>
+<script>
+const params = new URLSearchParams(window.location.search);
+if (params.get('error')) {
+  document.getElementById('error-msg').textContent = 'Invalid username or password';
+}
+</script>
+</body>
+</html>
