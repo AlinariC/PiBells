@@ -29,6 +29,28 @@
   <script>
 let audioFiles = [];
 let audioMap = {};
+
+function formatTime12h(str) {
+  const parts = str.split(':');
+  let hour = parseInt(parts[0], 10);
+  const minute = parts[1] || '00';
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return `${hour.toString().padStart(2, '0')}:${minute} ${ampm}`;
+}
+
+function to24h(str) {
+  const m = str.trim().match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = m[3].toUpperCase();
+  if (h < 1 || h > 12) return null;
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return `${h.toString().padStart(2, '0')}:${min}`;
+}
 async function loadButtons() {
   const res = await fetch('/api/buttons');
   const data = await res.json();
@@ -71,7 +93,8 @@ async function loadSchedule() {
         .forEach(ev => {
           const li = document.createElement('li');
           const display = audioMap[ev.sound_file] || ev.sound_file;
-          li.textContent = `${ev.time} - ${display}`;
+          const timeDisp = formatTime12h(ev.time);
+          li.textContent = `${timeDisp} - ${display}`;
           const btn = document.createElement('button');
           btn.innerHTML = '<i class="fas fa-trash"></i> Remove';
           btn.onclick = async () => {
@@ -85,7 +108,8 @@ async function loadSchedule() {
     const form = document.createElement('form');
     form.className = 'add-event-form';
     const t = document.createElement('input');
-    t.type = 'time';
+    t.type = 'text';
+    t.placeholder = 'HH:MM AM/PM';
     t.required = true;
     const sel = document.createElement('select');
     audioFiles.forEach(file => {
@@ -102,10 +126,15 @@ async function loadSchedule() {
     form.appendChild(addBtn);
     form.onsubmit = async (e) => {
       e.preventDefault();
+      const val = to24h(t.value);
+      if (!val) {
+        alert('Invalid time format. Use HH:MM AM/PM');
+        return;
+      }
       await fetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ day: d, time: t.value, sound_file: sel.value })
+        body: JSON.stringify({ day: d, time: val, sound_file: sel.value })
       });
       loadSchedule();
     };
