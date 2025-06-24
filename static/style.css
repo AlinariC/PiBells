@@ -288,28 +288,28 @@ footer .footer-right {
 
 .theme-switch {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
   margin: 0 auto;
   background: var(--table-bg);
-  padding: 6px 14px;
-  border-radius: 20px;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  padding: 4px 10px;
+  border-radius: 15px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
 .theme-switch .theme-btn {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 1.2em;
-  padding: 6px;
+  font-size: 1em;
+  padding: 4px;
   border-radius: 50%;
-  transition: background 0.3s, transform 0.3s;
+  transition: background 0.3s, transform 0.2s;
 }
 .theme-switch .theme-btn.active,
 .theme-switch .theme-btn:hover {
-  background: var(--accent-start);
+  background: linear-gradient(to right, var(--accent-start), var(--accent-end));
   color: #fff;
-  transform: scale(1.2);
+  transform: scale(1.1);
 }
 
 .network-info {
