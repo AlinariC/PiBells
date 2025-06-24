@@ -460,6 +460,27 @@ def update_repo():
         raise HTTPException(status_code=500, detail=f"Update failed: {e}")
 
 
+@app.get("/api/update_stream")
+def update_repo_stream():
+    """Stream progress while updating the repository."""
+
+    def event_gen():
+        steps = [
+            (0, "Fetching latest code", ["git", "-C", str(BASE_DIR), "fetch", "--all"]),
+            (50, "Pulling updates", ["git", "-C", str(BASE_DIR), "pull"]),
+        ]
+        for progress, step, cmd in steps:
+            yield f"data:{json.dumps({'progress': progress, 'step': step})}\n\n"
+            try:
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except subprocess.CalledProcessError:
+                yield f"data:{json.dumps({'error': 'Update failed at: ' + step})}\n\n"
+                return
+        yield f"data:{json.dumps({'progress': 100, 'step': 'Done', 'complete': True})}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
 def list_audio() -> List[AudioFile]:
     meta = load_audio_meta()
     files: List[AudioFile] = []
