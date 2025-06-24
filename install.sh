@@ -11,6 +11,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 apt-get update
+apt-get upgrade -y
 apt-get install -y python3 python3-pip python3-venv git nginx
 
 TARGET_USER=${SUDO_USER:-pibells}
