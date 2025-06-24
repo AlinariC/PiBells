@@ -77,10 +77,10 @@ form {
 }
 
 #current-time {
-  text-align: center;
+  text-align: right;
   font-size: 3em;
   font-family: 'Courier New', monospace;
-  margin-bottom: 20px;
+  margin: 0;
 }
 
 #scan-progress {
