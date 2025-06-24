@@ -207,3 +207,14 @@ footer .footer-right {
   padding: 5px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
+
+.network-info {
+  background: var(--table-bg);
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
