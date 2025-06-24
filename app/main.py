@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Iterable, Tuple
 from urllib import request, parse
 import subprocess
+import secrets
+import pwd
+import spwd
+import crypt
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -28,6 +32,31 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI()
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# session token -> username mapping
+sessions: Dict[str, str] = {}
+
+
+def authenticate_user(username: str, password: str) -> bool:
+    """Return True if the provided credentials match a local account."""
+    try:
+        shadow = spwd.getspnam(username)
+    except KeyError:
+        return False
+    return crypt.crypt(password, shadow.sp_pwdp) == shadow.sp_pwdp
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/static") or path.startswith("/audio") or path == "/login" or path == "/logout":
+        return await call_next(request)
+    token = request.cookies.get("session")
+    if not token or token not in sessions:
+        return RedirectResponse("/login")
+    request.state.user = sessions[token]
+    response = await call_next(request)
+    return response
 
 
 class ScheduleEntry(BaseModel):
@@ -529,6 +558,33 @@ def test_sound(req: TestRequest):
         raise HTTPException(status_code=404, detail="Sound file not found")
     trigger_bell(req.sound_file)
     return {"status": "ok"}
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse("static/login.html")
+
+
+@app.post("/login")
+def login(username: str = Form(...), password: str = Form(...), remember: Optional[bool] = Form(False)):
+    if authenticate_user(username, password):
+        token = secrets.token_hex(16)
+        sessions[token] = username
+        resp = RedirectResponse("/", status_code=303)
+        max_age = 30 * 24 * 3600 if remember else None
+        resp.set_cookie("session", token, max_age=max_age, httponly=True)
+        return resp
+    return RedirectResponse("/login?error=1", status_code=303)
+
+
+@app.get("/logout")
+def logout(request: Request):
+    token = request.cookies.get("session")
+    if token:
+        sessions.pop(token, None)
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie("session")
+    return resp
 
 
 @app.get("/")

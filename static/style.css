@@ -218,3 +218,29 @@ footer .footer-right {
   gap: 8px;
   margin-top: 10px;
 }
+
+.login-container {
+  max-width: 300px;
+  margin: 100px auto;
+  background: var(--table-bg);
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  text-align: center;
+}
+
+.login-container label {
+  display: block;
+  margin: 10px 0;
+}
+
+.login-container input[type="text"],
+.login-container input[type="password"] {
+  width: 100%;
+  padding: 8px;
+}
+
+.login-logo {
+  height: 60px;
+  margin-bottom: 10px;
+}
