@@ -28,7 +28,10 @@
   </table>
 
   <h2>Network</h2>
-  <p id="ip-display"></p>
+  <div id="network-info" class="network-info">
+    <i class="fas fa-network-wired"></i>
+    <span id="hostname-display"></span> - <span id="ip-display"></span>
+  </div>
 
   <h2>Audio Files</h2>
   <form id="upload-form">
@@ -46,13 +49,16 @@
 
   <h2>Software</h2>
   <p id="version-display"></p>
+  <button id="check-version"><i class="fas fa-sync"></i> Check for Updates</button>
   <button id="update-btn"><i class="fas fa-download"></i> Update</button>
   <script>
   async function loadNetwork() {
     const res = await fetch('/api/network');
     const data = await res.json();
-    const p = document.getElementById('ip-display');
-    if (p) p.textContent = 'Current IP: ' + data.ip;
+    const ip = document.getElementById('ip-display');
+    const host = document.getElementById('hostname-display');
+    if (ip) ip.textContent = data.ip;
+    if (host) host.textContent = data.hostname;
   }
 
   async function loadDevices() {
@@ -209,6 +215,8 @@
       console.error(e);
     }
   }
+
+  document.getElementById('check-version').onclick = loadVersion;
 
   document.getElementById('update-btn').onclick = async () => {
     if (!confirm('Update PiBells now?')) return;
