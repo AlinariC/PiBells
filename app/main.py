@@ -26,6 +26,7 @@ app = FastAPI()
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+
 class ScheduleEntry(BaseModel):
     day: int  # 0=Monday
     time: dt_time
@@ -48,6 +49,10 @@ class AudioFile(BaseModel):
     name: str
 
 
+class AudioName(BaseModel):
+    name: str
+
+
 def load_all_schedules() -> Dict[str, object]:
     if not SCHEDULE_FILE.exists():
         return {"active": "Default", "schedules": {"Default": []}}
@@ -59,17 +64,20 @@ def save_all_schedules(data: Dict[str, object]):
     with open(SCHEDULE_FILE, "w") as f:
         json.dump(data, f, default=str)
 
+
 def load_schedule() -> List[ScheduleEntry]:
     data = load_all_schedules()
     active = data.get("active")
     entries = data.get("schedules", {}).get(active, [])
     return [ScheduleEntry(**item) for item in entries]
 
+
 def save_schedule(entries: List[ScheduleEntry]):
     data = load_all_schedules()
     active = data.get("active")
     data.setdefault("schedules", {})[active] = [e.dict() for e in entries]
     save_all_schedules(data)
+
 
 def load_devices() -> List[str]:
     if not DEVICES_FILE.exists():
@@ -120,7 +128,9 @@ def discover_barix_devices_iter(
         yield i, found_ip
 
 
-def discover_barix_devices(network: Optional[str] = None, timeout: float = 0.2) -> List[str]:
+def discover_barix_devices(
+    network: Optional[str] = None, timeout: float = 0.2
+) -> List[str]:
     """Scan a /24 network for Barix devices and return the found IPs."""
     return [ip for _, ip in discover_barix_devices_iter(network, timeout) if ip]
 
@@ -164,7 +174,10 @@ def get_local_ip() -> str:
 
 def list_schedules() -> Dict[str, object]:
     data = load_all_schedules()
-    return {"active": data.get("active"), "schedules": list(data.get("schedules", {}).keys())}
+    return {
+        "active": data.get("active"),
+        "schedules": list(data.get("schedules", {}).keys()),
+    }
 
 
 def create_schedule(name: str):
@@ -203,23 +216,31 @@ def trigger_bell(sound_file: str):
         except Exception as e:
             print(f"Failed to contact {device}: {e}")
 
+
 def bell_daemon():
     while True:
         now = datetime.now().replace(second=0, microsecond=0)
         weekday = now.weekday()
         events = load_schedule()
         for event in events:
-            if event.day == weekday and event.time.hour == now.hour and event.time.minute == now.minute:
+            if (
+                event.day == weekday
+                and event.time.hour == now.hour
+                and event.time.minute == now.minute
+            ):
                 trigger_bell(event.sound_file)
         time.sleep(30)
+
 
 def start_daemon():
     thread = threading.Thread(target=bell_daemon, daemon=True)
     thread.start()
 
+
 @app.on_event("startup")
 def on_startup():
     start_daemon()
+
 
 @app.get("/api/schedule", response_model=List[ScheduleEntry])
 def get_schedule():
@@ -358,7 +379,10 @@ def get_audio_files():
 
 @app.post("/api/audio", response_model=List[AudioFile])
 async def upload_audio(name: str = Form(...), file: UploadFile = File(...)):
-    if file.filename == "" or Path(file.filename).suffix.lower() not in SUPPORTED_AUDIO_EXTS:
+    if (
+        file.filename == ""
+        or Path(file.filename).suffix.lower() not in SUPPORTED_AUDIO_EXTS
+    ):
         raise HTTPException(status_code=400, detail="Unsupported file type")
     dest = AUDIO_DIR / file.filename
     with dest.open("wb") as f:
@@ -366,6 +390,17 @@ async def upload_audio(name: str = Form(...), file: UploadFile = File(...)):
         f.write(content)
     meta = load_audio_meta()
     meta[file.filename] = name or Path(file.filename).stem
+    save_audio_meta(meta)
+    return list_audio()
+
+
+@app.put("/api/audio/{filename}", response_model=List[AudioFile])
+def rename_audio(filename: str, body: AudioName):
+    file_path = AUDIO_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    meta = load_audio_meta()
+    meta[filename] = body.name
     save_audio_meta(meta)
     return list_audio()
 
@@ -413,6 +448,7 @@ def test_sound(req: TestRequest):
         raise HTTPException(status_code=404, detail="Sound file not found")
     trigger_bell(req.sound_file)
     return {"status": "ok"}
+
 
 @app.get("/")
 def index():
