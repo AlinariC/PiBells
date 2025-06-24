@@ -324,7 +324,7 @@ footer .footer-right {
 }
 
 .login-container {
-  max-width: 300px;
+  max-width: 360px;
   margin: 100px auto;
   background: var(--table-bg);
   padding: 30px;
@@ -342,6 +342,7 @@ footer .footer-right {
 .login-container input[type="password"] {
   width: 100%;
   padding: 12px;
+  box-sizing: border-box;
 }
 
 .login-logo {
