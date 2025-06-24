@@ -208,13 +208,16 @@ footer .footer-right {
   background: var(--header-bg);
   color: var(--text-color);
   border: 1px solid var(--table-border);
-  border-radius: 8px;
-  padding: 5px;
+  border-radius: 12px;
+  padding: 15px 20px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  font-size: 1.5em;
 }
 .theme-switch select {
   font-family: "Font Awesome 6 Free", Arial, sans-serif;
   font-weight: 900;
+  font-size: 1em;
+  padding: 5px 10px;
 }
 
 .network-info {
