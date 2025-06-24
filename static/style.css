@@ -59,6 +59,9 @@ th {
 button {
   padding: 5px 10px;
 }
+button i {
+  margin-right: 4px;
+}
 form {
   margin-top: 20px;
 }
