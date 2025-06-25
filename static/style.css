@@ -199,7 +199,7 @@ form input[type="color"] {
 
 .audio-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 15px;
   margin-top: 15px;
 }
@@ -210,12 +210,26 @@ form input[type="color"] {
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  text-align: center;
+  min-height: 200px;
 }
 
-.audio-item span {
-  flex: 1;
+.audio-name {
+  font-weight: bold;
+  margin-bottom: 10px;
+}
+
+.audio-icon {
+  font-size: 48px;
+  margin-bottom: 10px;
+}
+
+.audio-actions {
+  margin-top: auto;
+  display: flex;
+  gap: 6px;
 }
 
 .test-section {

@@ -140,9 +140,19 @@
     data.forEach(file => {
       const div = document.createElement('div');
       div.className = 'audio-item';
-      const span = document.createElement('span');
-      span.textContent = file.name;
-      div.appendChild(span);
+
+      const name = document.createElement('div');
+      name.className = 'audio-name';
+      name.textContent = file.name;
+      div.appendChild(name);
+
+      const icon = document.createElement('i');
+      icon.className = 'fa-solid fa-music audio-icon';
+      div.appendChild(icon);
+
+      const actions = document.createElement('div');
+      actions.className = 'audio-actions';
+
       const testBtn = document.createElement('button');
       testBtn.className = 'btn';
       testBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-play"></i></span> Test';
@@ -153,7 +163,8 @@
           body: JSON.stringify({ sound_file: file.file })
         });
       };
-      div.appendChild(testBtn);
+      actions.appendChild(testBtn);
+
       const edit = document.createElement('button');
       edit.className = 'btn';
       edit.innerHTML = '<span class="icon"><i class="fa-solid fa-pen"></i></span> Rename';
@@ -167,7 +178,8 @@
         });
         loadAudio();
       };
-      div.appendChild(edit);
+      actions.appendChild(edit);
+
       const del = document.createElement('button');
       del.className = 'btn btn-danger';
       del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
@@ -176,7 +188,9 @@
         await fetch('/api/audio/' + encodeURIComponent(file.file), { method: 'DELETE' });
         loadAudio();
       };
-      div.appendChild(del);
+      actions.appendChild(del);
+
+      div.appendChild(actions);
       list.appendChild(div);
     });
   }
