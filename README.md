@@ -14,7 +14,7 @@ PiBells is a lightweight bell scheduler built with FastAPI. It turns a Raspberry
 
 ## Features
 - 📅 Create multiple schedules from your browser
-- 🔊 Stream bells to Barix devices over port 2020 or play audio locally
+- 🔊 Stream bells to Barix devices using UDP on port 3020 or play audio locally
 - 🌐 Scan your network to discover devices automatically
 - 🎵 Upload MP3, WAV, OGG or M4A files as bell sounds
 - 🗑 Delete old audio files to free up space
