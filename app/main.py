@@ -254,28 +254,31 @@ def trigger_bell(sound_file: str):
     def send(device: str):
         ffmpeg_cmd = [
             "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
             "-re",
+            "-fflags",
+            "+nobuffer",
+            "-flush_packets",
+            "1",
             "-i",
             str(path),
             "-f",
             "mp3",
-            "-",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            f"udp://{device}:3020",
         ]
-        # Use -q 0 so nc quits immediately once stdin closes
-        nc_cmd = ["nc", "-q", "0", device, "2020"]
         try:
-            ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-            )
-            nc_proc = subprocess.Popen(
-                nc_cmd,
-                stdin=ffmpeg_proc.stdout,
+            subprocess.run(
+                ffmpeg_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=True,
             )
-            ffmpeg_proc.stdout.close()
-            nc_proc.communicate()
-            ffmpeg_proc.wait()
         except FileNotFoundError as e:
             print(f"Failed to stream to {device}: {e}")
 
