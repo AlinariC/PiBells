@@ -44,9 +44,11 @@
   <hr class="section-divider">
   <h2>Software</h2>
   <p id="version-display"></p>
-  <button id="update-btn" class="btn"><span class="icon"><i class="fa-solid fa-download"></i></span> Update</button>
-  <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
-  <div id="update-message" class="update-message" style="display:none;"></div>
+  <div class="update-actions">
+    <button id="update-btn" class="btn"><span class="icon"><i class="fa-solid fa-download"></i></span> Update</button>
+    <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
+    <div id="update-message" class="update-message" style="display:none;"></div>
+  </div>
   <script>
   async function loadDevices() {
     const res = await fetch('/api/devices');
