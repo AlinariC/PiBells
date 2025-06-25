@@ -349,6 +349,7 @@ button.btn {
   width: auto;
   display: inline-flex;
   align-items: center;
+  align-self: flex-start;
 }
 
 /* Match heading styles on settings page */
