@@ -143,12 +143,11 @@
 
       const name = document.createElement('div');
       name.className = 'audio-name';
-      name.textContent = file.name;
-      div.appendChild(name);
-
       const icon = document.createElement('i');
       icon.className = 'fa-solid fa-music audio-icon';
-      div.appendChild(icon);
+      name.appendChild(icon);
+      name.appendChild(document.createTextNode(file.name));
+      div.appendChild(name);
 
       const actions = document.createElement('div');
       actions.className = 'audio-actions';

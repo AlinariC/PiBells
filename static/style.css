@@ -206,24 +206,28 @@ form input[type="color"] {
 
 .audio-item {
   background: var(--table-bg);
-  padding: 15px;
+  padding: 10px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  min-height: 200px;
+  min-height: 150px;
 }
 
 .audio-name {
   font-weight: bold;
-  margin-bottom: 10px;
+  font-size: 1.2em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .audio-icon {
-  font-size: 48px;
-  margin-bottom: 10px;
+  font-size: 24px;
+  margin: 0;
 }
 
 .audio-actions {
