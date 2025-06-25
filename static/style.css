@@ -97,6 +97,7 @@ table {
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
+.schedule-day h3 { text-align: center; margin: 0 0 10px; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
 .schedule-day ul {
   list-style: none;
   padding: 0;
