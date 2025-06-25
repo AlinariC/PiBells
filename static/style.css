@@ -134,6 +134,9 @@ form select {
   font-size: 1em;
   margin: 4px 8px 4px 0;
 }
+#icon-preview i {
+  font-size: 1.2em;
+}
 #schedule-select,
 #new-schedule {
   padding: 10px;
