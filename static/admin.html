@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#4facfe">
   <title>Device Configuration</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/css/all.min.css">
 </head>
 <body class="settings-page">
   <header>
@@ -17,17 +18,17 @@
       <span></span><span></span><span></span>
     </button>
     <nav>
-      <a href="/"><span class="icon">←</span> Back to Schedule</a>
-      <a href="/logout"><span class="icon">🚪</span> Logout</a>
+      <a href="/"><span class="icon"><i class="fa-solid fa-arrow-left"></i></span> Back to Schedule</a>
+      <a href="/logout"><span class="icon"><i class="fa-solid fa-right-from-bracket"></i></span> Logout</a>
     </nav>
   </header>
   <h1>Barix Devices</h1>
   <form id="add-form">
     <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
-    <button type="submit" class="btn"><span class="icon">➕</span> Add</button>
+    <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
   </form>
   <label>Network: <input type="text" id="scan-net" placeholder="192.168.1"></label>
-  <button id="scan-btn" class="btn"><span class="icon">🔍</span> Scan Network</button>
+  <button id="scan-btn" class="btn"><span class="icon"><i class="fa-solid fa-magnifying-glass"></i></span> Scan Network</button>
   <progress id="scan-progress" value="0" max="254" style="display:none;"></progress>
   <table id="devices">
     <thead><tr><th>IP</th><th>Status</th><th>Actions</th></tr></thead>
@@ -37,7 +38,7 @@
   <hr class="section-divider">
   <h2>Network</h2>
   <div id="network-info" class="network-info">
-    <span class="icon">🌐</span>
+    <span class="icon"><i class="fa-solid fa-globe"></i></span>
     <span id="hostname-display"></span> - <span id="ip-display"></span>
   </div>
 
@@ -46,7 +47,7 @@
   <form id="upload-form">
     <input type="file" id="audio-file" accept="audio/*" required>
     <input type="text" id="audio-name" placeholder="Name" required>
-    <button type="submit" class="btn"><span class="icon">⬆️</span> Upload</button>
+    <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-upload"></i></span> Upload</button>
   </form>
   <div id="audio-list" class="audio-grid"></div>
 
@@ -54,14 +55,14 @@
   <h2>Test</h2>
   <div class="test-section">
     <label>Sound file: <select id="test-sound"></select></label>
-    <button id="test-play" class="btn"><span class="icon">▶️</span> Play</button>
+    <button id="test-play" class="btn"><span class="icon"><i class="fa-solid fa-play"></i></span> Play</button>
   </div>
 
   <hr class="section-divider">
   <h2>Software</h2>
   <p id="version-display"></p>
-  <button id="update-btn" class="btn"><span class="icon">⬇️</span> Update</button>
-  <button id="reboot-btn" class="btn"><span class="icon">🔌</span> Reboot</button>
+  <button id="update-btn" class="btn"><span class="icon"><i class="fa-solid fa-download"></i></span> Update</button>
+  <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
   <div id="update-message" class="update-message" style="display:none;"></div>
   <script>
   async function loadNetwork() {
@@ -86,7 +87,7 @@
       statusTd.innerHTML = '<span class="status-icon icon" data-ip="' + ip + '">●</span>';
       const btn = document.createElement('button');
       btn.className = 'btn btn-danger';
-      btn.innerHTML = '<span class="icon">🗑</span> Delete';
+      btn.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
       btn.onclick = async () => {
         await fetch('/api/devices/' + i, { method: 'DELETE' });
         loadDevices();
@@ -172,7 +173,7 @@
       div.appendChild(span);
       const edit = document.createElement('button');
       edit.className = 'btn';
-      edit.innerHTML = '<span class="icon">✏️</span>';
+      edit.innerHTML = '<span class="icon"><i class="fa-solid fa-pen"></i></span>';
       edit.onclick = async () => {
         const name = prompt('New name:', file.name);
         if (!name) return;
@@ -186,7 +187,7 @@
       div.appendChild(edit);
       const del = document.createElement('button');
       del.className = 'btn btn-danger';
-      del.innerHTML = '<span class="icon">🗑</span>';
+      del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span>';
       del.onclick = async () => {
         if (!confirm('Delete this file?')) return;
         await fetch('/api/audio/' + encodeURIComponent(file.file), { method: 'DELETE' });
@@ -249,7 +250,7 @@
     try {
       const res = await fetch('/api/update', { method: 'POST' });
       if (!res.ok) throw new Error('Update failed');
-      msg.innerHTML = '<span class="icon">✅</span> Update complete, please reboot system.';
+      msg.innerHTML = '<span class="icon"><i class="fa-solid fa-circle-check"></i></span> Update complete, please reboot system.';
       msg.style.display = 'inline-flex';
     } catch (e) {
       alert(e);
@@ -285,9 +286,9 @@
       <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
     </div>
     <div class="theme-switch">
-      <button class="theme-btn" data-theme="light" title="Light">🌞</button>
-      <button class="theme-btn" data-theme="auto" title="Auto">🌓</button>
-      <button class="theme-btn" data-theme="dark" title="Dark">🌜</button>
+      <button class="theme-btn" data-theme="light" title="Light"><i class="fa-solid fa-sun"></i></button>
+      <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
+      <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
     </div>
     <div id="hostname" class="footer-right"></div>
   </footer>
