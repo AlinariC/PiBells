@@ -37,7 +37,20 @@ if (params.get('error')) {
     <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
     <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
   </div>
+  <div id="hostname" class="footer-right"></div>
 </footer>
+<script>
+async function loadHostname() {
+  try {
+    const res = await fetch('/api/network');
+    const data = await res.json();
+    document.getElementById('hostname').textContent = `${data.hostname} - ${data.ip}`;
+  } catch (e) {
+    console.error(e);
+  }
+}
+loadHostname();
+</script>
 <script src="/static/theme.js"></script>
 </body>
 </html>
