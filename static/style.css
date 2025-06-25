@@ -134,6 +134,10 @@ form select {
   font-size: 1em;
   margin: 4px 8px 4px 0;
 }
+form input[type="color"] {
+  width: 150px;
+  height: 40px;
+}
 #icon-preview i {
   font-size: 1.2em;
 }
