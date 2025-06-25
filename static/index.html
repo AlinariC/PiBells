@@ -29,6 +29,7 @@
     <button id="set-schedule" class="btn"><span class="icon"><i class="fa-solid fa-check"></i></span> Set Schedule</button>
     <input type="text" id="new-schedule" placeholder="New schedule">
     <button id="add-schedule" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
+    <button id="delete-schedule" class="btn btn-danger"><span class="icon"><i class="fa-solid fa-trash"></i></span> Delete</button>
   </div>
   <div id="schedule-grid" class="schedule-grid"></div>
   <script>
@@ -177,6 +178,13 @@ document.getElementById('add-schedule').onclick = async () => {
     body: JSON.stringify({ name })
   });
   document.getElementById('new-schedule').value = '';
+  loadScheduleList();
+  loadSchedule();
+};
+document.getElementById('delete-schedule').onclick = async () => {
+  const name = document.getElementById('schedule-select').value;
+  if (!name) return;
+  await fetch('/api/schedules/' + encodeURIComponent(name), { method: 'DELETE' });
   loadScheduleList();
   loadSchedule();
 };
