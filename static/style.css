@@ -486,6 +486,12 @@ button.btn:hover {
 .icon-btn.danger {
   color: #e02424;
 }
+.icon-btn.test-icon {
+  color: green;
+}
+.icon-btn.edit-icon {
+  color: blue;
+}
 
 .update-message {
   color: green;
