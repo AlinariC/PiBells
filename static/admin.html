@@ -33,13 +33,6 @@
   </table>
 
   <hr class="section-divider">
-  <h2>Network</h2>
-  <div id="network-info" class="network-info">
-    <span class="icon"><i class="fa-solid fa-globe"></i></span>
-    <span id="hostname-display"></span> - <span id="ip-display"></span>
-  </div>
-
-  <hr class="section-divider">
   <h2>Audio Files</h2>
   <form id="upload-form">
     <input type="file" id="audio-file" accept="audio/*" required>
@@ -62,15 +55,6 @@
   <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
   <div id="update-message" class="update-message" style="display:none;"></div>
   <script>
-  async function loadNetwork() {
-    const res = await fetch('/api/network');
-    const data = await res.json();
-    const ip = document.getElementById('ip-display');
-    const host = document.getElementById('hostname-display');
-    if (ip) ip.textContent = data.ip;
-    if (host) host.textContent = data.hostname;
-  }
-
   async function loadDevices() {
     const res = await fetch('/api/devices');
     const data = await res.json();
@@ -127,7 +111,6 @@
   };
 
   loadDevices();
-  loadNetwork();
 
   document.getElementById('scan-btn').onclick = () => {
     const net = document.getElementById('scan-net').value;
@@ -294,7 +277,7 @@
     try {
       const res = await fetch('/api/network');
       const data = await res.json();
-      document.getElementById('hostname').textContent = data.hostname;
+      document.getElementById('hostname').textContent = `${data.hostname} - ${data.ip}`;
     } catch (e) {
       console.error(e);
     }
