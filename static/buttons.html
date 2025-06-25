@@ -136,7 +136,7 @@ document.getElementById('add-form').onsubmit = async (e) => {
     try {
       const res = await fetch('/api/network');
       const data = await res.json();
-      document.getElementById('hostname').textContent = data.hostname;
+      document.getElementById('hostname').textContent = `${data.hostname} - ${data.ip}`;
     } catch (e) {
       console.error(e);
     }

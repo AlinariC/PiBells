@@ -265,20 +265,20 @@ footer .footer-right {
 
 .theme-switch {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   align-items: center;
   margin: 0 auto;
   background: var(--table-bg);
-  padding: 2px 6px;
-  border-radius: 12px;
+  padding: 1px 4px;
+  border-radius: 10px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
 .theme-switch .theme-btn {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 0.9em;
-  padding: 2px;
+  font-size: 0.8em;
+  padding: 1px;
   border-radius: 50%;
   transition: background 0.3s, transform 0.2s;
 }
