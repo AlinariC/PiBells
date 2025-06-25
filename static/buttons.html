@@ -40,10 +40,7 @@
     </label>
     <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
   </form>
-  <table id="buttons">
-    <thead><tr><th>Name</th><th>Sound</th><th>Icon</th><th>Color</th><th>Actions</th></tr></thead>
-    <tbody></tbody>
-  </table>
+  <div id="buttons" class="button-grid"></div>
 <script>
 let audioMap = {};
 async function loadAudio() {
@@ -65,24 +62,46 @@ async function loadAudio() {
 async function loadButtons() {
   const res = await fetch('/api/buttons');
   const data = await res.json();
-  const tbody = document.querySelector('#buttons tbody');
-  tbody.innerHTML = '';
+  const container = document.getElementById('buttons');
+  container.innerHTML = '';
   const iconMap = {
-    'fa-bell': '<i class="fa-solid fa-bell"></i>',
-    'fa-fire': '<i class="fa-solid fa-fire"></i>',
-    'fa-exclamation-triangle': '<i class="fa-solid fa-triangle-exclamation"></i>',
-    'fa-ambulance': '<i class="fa-solid fa-truck-medical"></i>',
-    'fa-bullhorn': '<i class="fa-solid fa-bullhorn"></i>',
-    'fa-volume-high': '<i class="fa-solid fa-volume-high"></i>',
-    'fa-school': '<i class="fa-solid fa-school"></i>',
-    'fa-music': '<i class="fa-solid fa-music"></i>'
+    'fa-bell': 'fa-bell',
+    'fa-fire': 'fa-fire',
+    'fa-exclamation-triangle': 'fa-triangle-exclamation',
+    'fa-ambulance': 'fa-truck-medical',
+    'fa-bullhorn': 'fa-bullhorn',
+    'fa-volume-high': 'fa-volume-high',
+    'fa-school': 'fa-school',
+    'fa-music': 'fa-music'
   };
   data.forEach((btn, i) => {
-    const tr = document.createElement('tr');
+    const item = document.createElement('div');
+    item.className = 'button-item';
+
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'audio-name';
+    if (btn.icon) {
+      const icon = document.createElement('i');
+      const cls = iconMap[btn.icon] || btn.icon;
+      icon.className = 'fa-solid ' + cls + ' audio-icon';
+      nameDiv.appendChild(icon);
+    }
+    nameDiv.appendChild(document.createTextNode(btn.name));
+    item.appendChild(nameDiv);
+
+    const info = document.createElement('div');
+    info.className = 'button-info';
     const sound = audioMap[btn.sound_file] || btn.sound_file;
-    const icon = iconMap[btn.icon] || btn.icon || '';
-    const iconHtml = icon ? `<span class="icon">${icon}</span>` : '';
-    tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${iconHtml}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
+    info.textContent = sound;
+    item.appendChild(info);
+
+    const colorBox = document.createElement('div');
+    colorBox.className = 'color-box';
+    colorBox.style.background = btn.color;
+    item.appendChild(colorBox);
+
+    const actions = document.createElement('div');
+    actions.className = 'audio-actions';
     const del = document.createElement('button');
     del.className = 'btn btn-danger';
     del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
@@ -90,10 +109,10 @@ async function loadButtons() {
       await fetch('/api/buttons/' + i, { method: 'DELETE' });
       loadButtons();
     };
-    const td = document.createElement('td');
-    td.appendChild(del);
-    tr.appendChild(td);
-    tbody.appendChild(tr);
+    actions.appendChild(del);
+    item.appendChild(actions);
+
+    container.appendChild(item);
   });
 }
 
