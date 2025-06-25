@@ -49,7 +49,13 @@ def authenticate_user(username: str, password: str) -> bool:
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/static") or path.startswith("/audio") or path == "/login" or path == "/logout":
+    if (
+        path.startswith("/static")
+        or path.startswith("/audio")
+        or path == "/login"
+        or path == "/logout"
+        or path == "/api/network"
+    ):
         return await call_next(request)
     token = request.cookies.get("session")
     if not token or token not in sessions:
