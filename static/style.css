@@ -138,6 +138,19 @@ form input[type="color"] {
   width: 150px;
   height: 40px;
 }
+
+/* Inline form layout for quick button addition */
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.inline-form label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 #icon-preview i {
   font-size: 1.2em;
 }
