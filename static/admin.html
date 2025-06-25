@@ -33,11 +33,14 @@
 
   <hr class="section-divider">
   <h2>Audio Files</h2>
-  <form id="upload-form">
-    <input type="file" id="audio-file" accept="audio/*" required>
-    <input type="text" id="audio-name" placeholder="Name" required>
-    <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-upload"></i></span> Upload</button>
-  </form>
+  <div class="upload-box">
+    <h3>Add New File</h3>
+    <form id="upload-form">
+      <input type="file" id="audio-file" accept="audio/*" required>
+      <input type="text" id="audio-name" placeholder="Name" required>
+      <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-upload"></i></span> Upload</button>
+    </form>
+  </div>
   <div id="audio-list" class="audio-grid"></div>
 
 
