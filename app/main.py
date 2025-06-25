@@ -295,6 +295,7 @@ def trigger_bell(sound_file: str):
 
 
 def bell_daemon():
+    """Check the schedule once per minute at the top of the minute."""
     while True:
         now = datetime.now().replace(second=0, microsecond=0)
         weekday = now.weekday()
@@ -306,7 +307,10 @@ def bell_daemon():
                 and event.time.minute == now.minute
             ):
                 trigger_bell(event.sound_file)
-        time.sleep(30)
+        # Sleep until the next minute starts
+        now = datetime.now()
+        delay = 60 - now.second - now.microsecond / 1_000_000
+        time.sleep(delay)
 
 
 def start_daemon():
