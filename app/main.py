@@ -268,7 +268,8 @@ def trigger_bell(sound_file: str):
             "mp3",
             "-",
         ]
-        nc_cmd = ["nc", device, "2020"]
+        # Use -q 0 so nc quits immediately once stdin closes
+        nc_cmd = ["nc", "-q", "0", device, "2020"]
         try:
             ffmpeg_proc = subprocess.Popen(
                 ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
