@@ -41,12 +41,6 @@
   </form>
   <div id="audio-list" class="audio-grid"></div>
 
-  <hr class="section-divider">
-  <h2>Test</h2>
-  <div class="test-section">
-    <label>Sound file: <select id="test-sound"></select></label>
-    <button id="test-play" class="btn"><span class="icon"><i class="fa-solid fa-play"></i></span> Play</button>
-  </div>
 
   <hr class="section-divider">
   <h2>Software</h2>
@@ -143,17 +137,26 @@
     const data = await res.json();
     const list = document.getElementById('audio-list');
     list.innerHTML = '';
-    const testSelect = document.getElementById('test-sound');
-    if (testSelect) testSelect.innerHTML = '';
     data.forEach(file => {
       const div = document.createElement('div');
       div.className = 'audio-item';
       const span = document.createElement('span');
       span.textContent = file.name;
       div.appendChild(span);
+      const testBtn = document.createElement('button');
+      testBtn.className = 'btn';
+      testBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-play"></i></span> Test';
+      testBtn.onclick = async () => {
+        await fetch('/api/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sound_file: file.file })
+        });
+      };
+      div.appendChild(testBtn);
       const edit = document.createElement('button');
       edit.className = 'btn';
-      edit.innerHTML = '<span class="icon"><i class="fa-solid fa-pen"></i></span>';
+      edit.innerHTML = '<span class="icon"><i class="fa-solid fa-pen"></i></span> Rename';
       edit.onclick = async () => {
         const name = prompt('New name:', file.name);
         if (!name) return;
@@ -167,7 +170,7 @@
       div.appendChild(edit);
       const del = document.createElement('button');
       del.className = 'btn btn-danger';
-      del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span>';
+      del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
       del.onclick = async () => {
         if (!confirm('Delete this file?')) return;
         await fetch('/api/audio/' + encodeURIComponent(file.file), { method: 'DELETE' });
@@ -175,12 +178,6 @@
       };
       div.appendChild(del);
       list.appendChild(div);
-      if (testSelect) {
-        const opt = document.createElement('option');
-        opt.value = file.file;
-        opt.textContent = file.name;
-        testSelect.appendChild(opt);
-      }
     });
   }
 
@@ -198,16 +195,6 @@
   };
 
   loadAudio();
-
-  document.getElementById('test-play').onclick = async () => {
-    const sound = document.getElementById('test-sound').value;
-    if (!sound) return;
-    await fetch('/api/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sound_file: sound })
-    });
-  };
 
   async function loadVersion() {
     try {
