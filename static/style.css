@@ -86,11 +86,13 @@ table {
 }
 #schedule-grid {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 20px;
 }
 .schedule-day {
-  flex: 1;
+  flex: 1 1 220px;
+  min-width: 220px;
   background: var(--table-bg);
   padding: 15px;
   border: 1px solid var(--table-border);
@@ -104,6 +106,7 @@ table {
 }
 .schedule-day li {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   margin: 8px 0;
