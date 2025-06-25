@@ -129,10 +129,8 @@ def save_devices(devices: List[str]):
         json.dump(devices, f)
 
 
-def discover_barix_devices_iter(
-    network: Optional[str] = None, timeout: float = 0.2
-) -> Iterable[Tuple[int, Optional[str]]]:
-    """Yield progress while scanning for Barix devices.
+def discover_barix_devices_iter(timeout: float = 0.2) -> Iterable[Tuple[int, Optional[str]]]:
+    """Yield progress while scanning for Barix devices on the local subnet.
 
     The returned iterator yields a tuple ``(index, ip)`` for every host that is
     checked where ``index`` is the current host number (1-254) and ``ip`` is the
@@ -140,20 +138,10 @@ def discover_barix_devices_iter(
     scan looks for hosts with port 2020 open, which is the port used by Barix
     devices to stream audio.
     """
-    if network is None:
-        local_ip = get_local_ip()
-        if local_ip == "0.0.0.0":
-            return
-        subnet = ".".join(local_ip.split(".")[:-1])
-    else:
-        subnet = network.strip()
-        if subnet.endswith(".0/24"):
-            subnet = subnet[:-4]
-        if subnet.endswith("."):
-            subnet = subnet[:-1]
-        parts = subnet.split(".")
-        if len(parts) != 3:
-            raise ValueError("Network must be like '192.168.1'")
+    local_ip = get_local_ip()
+    if local_ip == "0.0.0.0":
+        return
+    subnet = ".".join(local_ip.split(".")[:-1])
     for i in range(1, 255):
         target = f"{subnet}.{i}"
         found_ip = None
@@ -165,11 +153,9 @@ def discover_barix_devices_iter(
         yield i, found_ip
 
 
-def discover_barix_devices(
-    network: Optional[str] = None, timeout: float = 0.2
-) -> List[str]:
-    """Scan a /24 network for Barix devices and return the found IPs."""
-    return [ip for _, ip in discover_barix_devices_iter(network, timeout) if ip]
+def discover_barix_devices(timeout: float = 0.2) -> List[str]:
+    """Scan the local /24 network for Barix devices and return their IPs."""
+    return [ip for _, ip in discover_barix_devices_iter(timeout=timeout) if ip]
 
 
 def load_buttons() -> List[QuickButton]:
@@ -421,22 +407,19 @@ def devices_status():
 
 
 @app.get("/api/devices/scan", response_model=List[str])
-def scan_devices(network: Optional[str] = None):
-    """Discover Barix devices on the specified network."""
-    try:
-        return discover_barix_devices(network=network)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+def scan_devices():
+    """Discover Barix devices on the local network."""
+    return discover_barix_devices()
 
 
 @app.get("/api/devices/scan_stream")
-def scan_devices_stream(network: Optional[str] = None):
-    """Stream progress while scanning for Barix devices."""
+def scan_devices_stream():
+    """Stream progress while scanning for Barix devices on the local network."""
 
     def event_gen():
         devices: List[str] = []
         try:
-            for idx, ip in discover_barix_devices_iter(network=network):
+            for idx, ip in discover_barix_devices_iter():
                 data = {"progress": idx}
                 if ip:
                     devices.append(ip)

@@ -23,9 +23,8 @@
   <form id="add-form">
     <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
     <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
+    <button type="button" id="scan-btn" class="btn"><span class="icon"><i class="fa-solid fa-magnifying-glass"></i></span> Scan Network</button>
   </form>
-  <label>Network: <input type="text" id="scan-net" placeholder="192.168.1"></label>
-  <button id="scan-btn" class="btn"><span class="icon"><i class="fa-solid fa-magnifying-glass"></i></span> Scan Network</button>
   <progress id="scan-progress" value="0" max="254" style="display:none;"></progress>
   <table id="devices">
     <thead><tr><th>IP</th><th>Status</th><th>Actions</th></tr></thead>
@@ -107,8 +106,7 @@
   loadDevices();
 
   document.getElementById('scan-btn').onclick = () => {
-    const net = document.getElementById('scan-net').value;
-    const url = net ? '/api/devices/scan_stream?network=' + encodeURIComponent(net) : '/api/devices/scan_stream';
+    const url = '/api/devices/scan_stream';
     const progress = document.getElementById('scan-progress');
     progress.value = 0;
     progress.style.display = 'inline';
