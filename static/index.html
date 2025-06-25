@@ -102,8 +102,9 @@ async function loadSchedule() {
           const timeDisp = formatTime12h(ev.time);
           li.textContent = `${timeDisp} - ${display}`;
           const btn = document.createElement('button');
-          btn.className = 'btn btn-danger';
-          btn.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Remove';
+          btn.className = 'icon-btn danger';
+          btn.title = 'Remove';
+          btn.innerHTML = '<i class="fa-solid fa-trash"></i>';
           btn.onclick = async () => {
             await fetch('/api/schedule/' + ev.index, { method: 'DELETE' });
             loadSchedule();
