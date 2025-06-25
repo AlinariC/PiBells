@@ -11,6 +11,7 @@
   --footer-text: #fff;
   --accent-start: #4facfe;
   --accent-end: #00f2fe;
+  --bg-overlay: rgba(255,255,255,0.5);
 }
 
 body {
@@ -18,7 +19,8 @@ body {
   margin: 0;
   padding: 20px 40px;
   box-sizing: border-box;
-  background: var(--bg-image) no-repeat center center fixed;
+  background: linear-gradient(var(--bg-overlay), var(--bg-overlay)),
+              var(--bg-image) no-repeat center center fixed;
   background-size: cover;
   background-color: var(--bg-color);
   color: var(--text-color);
@@ -42,6 +44,7 @@ body.dark-mode {
   --footer-text: #fff;
   --accent-start: #4facfe;
   --accent-end: #00f2fe;
+  --bg-overlay: rgba(0,0,0,0.5);
 }
 header {
   display: flex;
