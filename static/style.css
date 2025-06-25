@@ -405,6 +405,12 @@ button.btn:hover {
   gap: 5px;
 }
 
+.update-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
