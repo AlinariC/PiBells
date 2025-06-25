@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#4facfe">
   <title>Button Configuration</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/css/all.min.css">
 </head>
 <body>
   <header>
@@ -17,8 +18,8 @@
       <span></span><span></span><span></span>
     </button>
     <nav>
-      <a href="/"><span class="icon">←</span> Back to Schedule</a>
-      <a href="/logout"><span class="icon">🚪</span> Logout</a>
+      <a href="/"><span class="icon"><i class="fa-solid fa-arrow-left"></i></span> Back to Schedule</a>
+      <a href="/logout"><span class="icon"><i class="fa-solid fa-right-from-bracket"></i></span> Logout</a>
     </nav>
   </header>
   <h1>Quick Buttons</h1>
@@ -29,13 +30,13 @@
     <label>Icon:
       <select id="icon">
         <option value="">None</option>
-        <option value="🔔">Bell</option>
-        <option value="🔥">Fire</option>
-        <option value="⚠️">Warning</option>
-        <option value="🚑">Ambulance</option>
+        <option value="fa-bell">Bell</option>
+        <option value="fa-fire">Fire</option>
+        <option value="fa-exclamation-triangle">Warning</option>
+        <option value="fa-ambulance">Ambulance</option>
       </select>
     </label>
-    <button type="submit" class="btn"><span class="icon">➕</span> Add</button>
+    <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
   </form>
   <table id="buttons">
     <thead><tr><th>Name</th><th>Sound</th><th>Icon</th><th>Color</th><th>Actions</th></tr></thead>
@@ -65,10 +66,10 @@ async function loadButtons() {
   const tbody = document.querySelector('#buttons tbody');
   tbody.innerHTML = '';
   const iconMap = {
-    'fa-bell': '🔔',
-    'fa-fire': '🔥',
-    'fa-exclamation-triangle': '⚠️',
-    'fa-ambulance': '🚑'
+    'fa-bell': '<i class="fa-solid fa-bell"></i>',
+    'fa-fire': '<i class="fa-solid fa-fire"></i>',
+    'fa-exclamation-triangle': '<i class="fa-solid fa-triangle-exclamation"></i>',
+    'fa-ambulance': '<i class="fa-solid fa-truck-medical"></i>'
   };
   data.forEach((btn, i) => {
     const tr = document.createElement('tr');
@@ -78,7 +79,7 @@ async function loadButtons() {
     tr.innerHTML = `<td>${btn.name}</td><td>${sound}</td><td>${iconHtml}</td><td><span style="background:${btn.color};padding:5px 10px;display:inline-block"></span></td>`;
     const del = document.createElement('button');
     del.className = 'btn btn-danger';
-    del.innerHTML = '<span class="icon">🗑</span> Delete';
+    del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
     del.onclick = async () => {
       await fetch('/api/buttons/' + i, { method: 'DELETE' });
       loadButtons();
@@ -127,9 +128,9 @@ document.getElementById('add-form').onsubmit = async (e) => {
       <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
     </div>
     <div class="theme-switch">
-      <button class="theme-btn" data-theme="light" title="Light">🌞</button>
-      <button class="theme-btn" data-theme="auto" title="Auto">🌓</button>
-      <button class="theme-btn" data-theme="dark" title="Dark">🌜</button>
+      <button class="theme-btn" data-theme="light" title="Light"><i class="fa-solid fa-sun"></i></button>
+      <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
+      <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
     </div>
     <div id="hostname" class="footer-right"></div>
   </footer>

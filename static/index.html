@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#4facfe">
   <title>PiBells Schedule</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/css/all.min.css">
 </head>
 <body>
   <header>
@@ -17,9 +18,9 @@
       <span></span><span></span><span></span>
     </button>
     <nav>
-      <a href="/admin"><span class="icon">⚙️</span> Settings</a>
-      <a href="/buttons"><span class="icon">🔔</span> Buttons</a>
-      <a href="/logout"><span class="icon">🚪</span> Logout</a>
+      <a href="/admin"><span class="icon"><i class="fa-solid fa-gear"></i></span> Settings</a>
+      <a href="/buttons"><span class="icon"><i class="fa-solid fa-bell"></i></span> Buttons</a>
+      <a href="/logout"><span class="icon"><i class="fa-solid fa-right-from-bracket"></i></span> Logout</a>
     </nav>
   </header>
   <div id="quick-buttons"></div>
@@ -28,9 +29,9 @@
     <label>Active schedule:
       <select id="schedule-select"></select>
     </label>
-    <button id="set-schedule" class="btn"><span class="icon">✔</span> Set Schedule</button>
+    <button id="set-schedule" class="btn"><span class="icon"><i class="fa-solid fa-check"></i></span> Set Schedule</button>
     <input type="text" id="new-schedule" placeholder="New schedule">
-    <button id="add-schedule" class="btn"><span class="icon">➕</span> Add</button>
+    <button id="add-schedule" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
   </div>
   <div id="schedule-grid" class="schedule-grid"></div>
   <script>
@@ -53,10 +54,10 @@ async function loadButtons() {
   const container = document.getElementById('quick-buttons');
   container.innerHTML = '';
   const iconMap = {
-    'fa-bell': '🔔',
-    'fa-fire': '🔥',
-    'fa-exclamation-triangle': '⚠️',
-    'fa-ambulance': '🚑'
+    'fa-bell': '<i class="fa-solid fa-bell"></i>',
+    'fa-fire': '<i class="fa-solid fa-fire"></i>',
+    'fa-exclamation-triangle': '<i class="fa-solid fa-triangle-exclamation"></i>',
+    'fa-ambulance': '<i class="fa-solid fa-truck-medical"></i>'
   };
   data.forEach(btn => {
     const b = document.createElement('button');
@@ -100,7 +101,7 @@ async function loadSchedule() {
           li.textContent = `${timeDisp} - ${display}`;
           const btn = document.createElement('button');
           btn.className = 'btn btn-danger';
-          btn.innerHTML = '<span class="icon">🗑</span> Remove';
+          btn.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Remove';
           btn.onclick = async () => {
             await fetch('/api/schedule/' + ev.index, { method: 'DELETE' });
             loadSchedule();
@@ -124,7 +125,7 @@ async function loadSchedule() {
     const addBtn = document.createElement('button');
     addBtn.type = 'submit';
     addBtn.className = 'btn';
-    addBtn.innerHTML = '<span class="icon">➕</span> Add';
+    addBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-plus"></i></span> Add';
     form.appendChild(t);
     form.appendChild(sel);
     form.appendChild(addBtn);
@@ -205,9 +206,9 @@ updateTime();
       <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
     </div>
     <div class="theme-switch">
-      <button class="theme-btn" data-theme="light" title="Light">🌞</button>
-      <button class="theme-btn" data-theme="auto" title="Auto">🌓</button>
-      <button class="theme-btn" data-theme="dark" title="Dark">🌜</button>
+      <button class="theme-btn" data-theme="light" title="Light"><i class="fa-solid fa-sun"></i></button>
+      <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
+      <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
     </div>
     <div id="hostname" class="footer-right"></div>
   </footer>
