@@ -131,8 +131,7 @@ document.getElementById('add-form').onsubmit = async (e) => {
   loadButtons();
 };
 
-  loadAudio();
-  loadButtons();
+  loadAudio().then(loadButtons);
   function updateIconPreview() {
     const val = document.getElementById('icon').value;
     const preview = document.getElementById('icon-preview');
