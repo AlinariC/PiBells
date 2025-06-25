@@ -465,6 +465,28 @@ button.btn:hover {
   box-shadow: 0 6px 14px rgba(0,0,0,0.3);
 }
 
+/* Simple icon-only buttons used for delete and other actions */
+.icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1em;
+  transition: transform 0.2s;
+  min-width: 32px;
+  min-height: 32px;
+}
+.icon-btn:hover {
+  transform: scale(1.15);
+}
+.icon-btn.danger {
+  color: #e02424;
+}
+
 .update-message {
   color: green;
   font-weight: bold;

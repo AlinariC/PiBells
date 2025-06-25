@@ -156,8 +156,9 @@
       actions.className = 'audio-actions';
 
       const testBtn = document.createElement('button');
-      testBtn.className = 'btn';
-      testBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-play"></i></span> Test';
+      testBtn.className = 'icon-btn';
+      testBtn.title = 'Test';
+      testBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
       testBtn.onclick = async () => {
         await fetch('/api/test', {
           method: 'POST',
@@ -168,8 +169,9 @@
       actions.appendChild(testBtn);
 
       const edit = document.createElement('button');
-      edit.className = 'btn';
-      edit.innerHTML = '<span class="icon"><i class="fa-solid fa-pen"></i></span> Rename';
+      edit.className = 'icon-btn';
+      edit.title = 'Rename';
+      edit.innerHTML = '<i class="fa-solid fa-pen"></i>';
       edit.onclick = async () => {
         const name = prompt('New name:', file.name);
         if (!name) return;
@@ -183,8 +185,9 @@
       actions.appendChild(edit);
 
       const del = document.createElement('button');
-      del.className = 'btn btn-danger';
-      del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
+      del.className = 'icon-btn danger';
+      del.title = 'Delete';
+      del.innerHTML = '<i class="fa-solid fa-trash"></i>';
       del.onclick = async () => {
         if (!confirm('Delete this file?')) return;
         await fetch('/api/audio/' + encodeURIComponent(file.file), { method: 'DELETE' });
