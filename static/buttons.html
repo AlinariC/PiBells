@@ -24,14 +24,19 @@
     <label>Name: <input type="text" id="name" required></label>
     <label>Sound: <select id="sound"></select></label>
     <label>Color: <input type="color" id="color" value="#ff0000"></label>
-    <label>Icon:
+    <label style="display:flex;align-items:center;gap:6px;">Icon:
       <select id="icon">
         <option value="">None</option>
         <option value="fa-bell">Bell</option>
         <option value="fa-fire">Fire</option>
         <option value="fa-exclamation-triangle">Warning</option>
         <option value="fa-ambulance">Ambulance</option>
+        <option value="fa-bullhorn">Bullhorn</option>
+        <option value="fa-volume-high">Volume</option>
+        <option value="fa-school">School</option>
+        <option value="fa-music">Music</option>
       </select>
+      <span id="icon-preview" class="icon"></span>
     </label>
     <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
   </form>
@@ -66,7 +71,11 @@ async function loadButtons() {
     'fa-bell': '<i class="fa-solid fa-bell"></i>',
     'fa-fire': '<i class="fa-solid fa-fire"></i>',
     'fa-exclamation-triangle': '<i class="fa-solid fa-triangle-exclamation"></i>',
-    'fa-ambulance': '<i class="fa-solid fa-truck-medical"></i>'
+    'fa-ambulance': '<i class="fa-solid fa-truck-medical"></i>',
+    'fa-bullhorn': '<i class="fa-solid fa-bullhorn"></i>',
+    'fa-volume-high': '<i class="fa-solid fa-volume-high"></i>',
+    'fa-school': '<i class="fa-solid fa-school"></i>',
+    'fa-music': '<i class="fa-solid fa-music"></i>'
   };
   data.forEach((btn, i) => {
     const tr = document.createElement('tr');
@@ -105,6 +114,13 @@ document.getElementById('add-form').onsubmit = async (e) => {
 
   loadAudio();
   loadButtons();
+  function updateIconPreview() {
+    const val = document.getElementById('icon').value;
+    const preview = document.getElementById('icon-preview');
+    preview.innerHTML = val ? `<i class="fa-solid ${val}"></i>` : '';
+  }
+  document.getElementById('icon').addEventListener('change', updateIconPreview);
+  updateIconPreview();
   function updateTime() {
     const now = new Date();
     const pad = n => n.toString().padStart(2, '0');
