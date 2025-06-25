@@ -120,6 +120,7 @@ button {
   margin: 4px;
   min-width: 44px;
   min-height: 44px;
+  font-size: 1.1em;
 }
 button .icon {
   margin-right: 4px;
@@ -277,7 +278,7 @@ footer .footer-right {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 0.8em;
+  font-size: 0.9em;
   padding: 1px;
   border-radius: 50%;
   transition: background 0.3s, transform 0.2s;
