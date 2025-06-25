@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Iterable, Tuple
 from urllib import request
 import subprocess
 import secrets
-import pwd
 import spwd
 import crypt
 
@@ -129,7 +128,9 @@ def save_devices(devices: List[str]):
         json.dump(devices, f)
 
 
-def discover_barix_devices_iter(timeout: float = 0.2) -> Iterable[Tuple[int, Optional[str]]]:
+def discover_barix_devices_iter(
+    timeout: float = 0.2,
+) -> Iterable[Tuple[int, Optional[str]]]:
     """Yield progress while scanning for Barix devices on the local subnet.
 
     The returned iterator yields a tuple ``(index, ip)`` for every host that is
@@ -480,7 +481,12 @@ def update_repo_stream():
         for progress, step, cmd in steps:
             yield f"data:{json.dumps({'progress': progress, 'step': step})}\n\n"
             try:
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             except subprocess.CalledProcessError:
                 yield f"data:{json.dumps({'error': 'Update failed at: ' + step})}\n\n"
                 return
@@ -620,7 +626,11 @@ def login_page():
 
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...), remember: Optional[bool] = Form(False)):
+def login(
+    username: str = Form(...),
+    password: str = Form(...),
+    remember: Optional[bool] = Form(False),
+):
     if authenticate_user(username, password):
         token = secrets.token_hex(16)
         sessions[token] = username
@@ -655,6 +665,7 @@ def admin():
 def buttons_page():
     return FileResponse("static/buttons.html")
 
+
 @app.get("/manifest.json")
 def manifest_file():
     return FileResponse("static/manifest.json")
@@ -663,4 +674,3 @@ def manifest_file():
 @app.get("/service-worker.js")
 def service_worker():
     return FileResponse("static/service-worker.js", media_type="application/javascript")
-
