@@ -132,6 +132,13 @@ button .icon {
 form {
   margin-top: 20px;
 }
+/* Layout for device add form on admin page */
+#add-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
 form input,
 form select {
   padding: 10px;
@@ -292,7 +299,8 @@ form input[type="color"] {
   padding: 15px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-top: 15px;
@@ -371,7 +379,8 @@ footer .footer-right {
   padding: 15px;
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.3);
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-top: 15px;
@@ -460,13 +469,15 @@ button.btn:hover {
   color: green;
   font-weight: bold;
   margin-left: 10px;
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 5px;
 }
 
 .update-actions {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
