@@ -38,6 +38,7 @@
       </select>
       <span id="icon-preview" class="icon"></span>
     </label>
+    <label><input type="checkbox" id="loop"> Loop until stopped</label>
     <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
   </form>
   <div id="buttons" class="button-grid"></div>
@@ -92,7 +93,7 @@ async function loadButtons() {
     const info = document.createElement('div');
     info.className = 'button-info';
     const sound = audioMap[btn.sound_file] || btn.sound_file;
-    info.textContent = sound;
+    info.textContent = btn.loop ? sound + ' (loop)' : sound;
     item.appendChild(info);
 
     const colorBox = document.createElement('div');
@@ -122,10 +123,11 @@ document.getElementById('add-form').onsubmit = async (e) => {
   const sound = document.getElementById('sound').value;
   const color = document.getElementById('color').value;
   const icon = document.getElementById('icon').value;
+  const loop = document.getElementById('loop').checked;
   await fetch('/api/buttons', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, sound_file: sound, color, icon })
+    body: JSON.stringify({ name, sound_file: sound, color, icon, loop })
   });
   e.target.reset();
   loadButtons();
