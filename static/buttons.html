@@ -94,7 +94,11 @@ async function loadButtons() {
     const info = document.createElement('div');
     info.className = 'button-info';
     const sound = audioMap[btn.sound_file] || btn.sound_file;
-    info.textContent = btn.loop ? sound + ' (loop)' : sound;
+    if (btn.loop) {
+      info.innerHTML = `${sound} <i class="fa-solid fa-repeat" title="Loops"></i>`;
+    } else {
+      info.textContent = sound;
+    }
     item.appendChild(info);
 
     const colorBox = document.createElement('div');
