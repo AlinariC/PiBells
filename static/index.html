@@ -70,12 +70,20 @@ async function loadButtons() {
       b.textContent = btn.name;
     }
     b.style.background = btn.color;
+    const original = b.innerHTML;
     b.onclick = async () => {
-      await fetch('/api/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sound_file: btn.sound_file })
-      });
+      b.innerHTML = `<span class="icon"><i class="fa-solid fa-stop"></i></span> ${btn.name}`;
+      b.disabled = true;
+      try {
+        await fetch('/api/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sound_file: btn.sound_file })
+        });
+      } finally {
+        b.innerHTML = original;
+        b.disabled = false;
+      }
     };
     container.appendChild(b);
   });

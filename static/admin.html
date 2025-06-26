@@ -159,12 +159,20 @@
       testBtn.className = 'icon-btn test-icon';
       testBtn.title = 'Test';
       testBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
+      const original = testBtn.innerHTML;
       testBtn.onclick = async () => {
-        await fetch('/api/test', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sound_file: file.file })
-        });
+        testBtn.innerHTML = '<i class="fa-solid fa-stop"></i>';
+        testBtn.disabled = true;
+        try {
+          await fetch('/api/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sound_file: file.file })
+          });
+        } finally {
+          testBtn.innerHTML = original;
+          testBtn.disabled = false;
+        }
       };
       actions.appendChild(testBtn);
 
