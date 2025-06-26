@@ -529,6 +529,19 @@ button.btn:hover {
   gap: 10px;
 }
 
+.license-status.unlicensed {
+  color: red;
+  font-weight: bold;
+}
+
+.license-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+}
+
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }

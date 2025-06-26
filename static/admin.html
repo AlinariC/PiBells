@@ -55,6 +55,14 @@
     <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
     <div id="update-message" class="update-message" style="display:none;"></div>
   </div>
+  <div id="license-box">
+    <span id="license-status" class="license-status"></span>
+    <form id="license-form" class="license-form" style="display:none;">
+      <input type="email" id="license-email" placeholder="Email" required>
+      <input type="text" id="license-key" placeholder="License Key" required>
+      <button type="submit" class="btn">Register</button>
+    </form>
+  </div>
   <script>
   async function loadDevices() {
     const res = await fetch('/api/devices');
@@ -250,6 +258,43 @@
     }
   }
 
+  async function loadLicense() {
+    try {
+      const res = await fetch('/api/license');
+      const data = await res.json();
+      const statusEl = document.getElementById('license-status');
+      const form = document.getElementById('license-form');
+      if (data.status === 'VALID') {
+        statusEl.textContent = `Licensed through ${data.expires}`;
+        statusEl.classList.remove('unlicensed');
+        form.style.display = 'none';
+      } else {
+        statusEl.textContent = 'Unlicensed';
+        statusEl.classList.add('unlicensed');
+        form.style.display = 'flex';
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  document.getElementById('license-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('license-email').value;
+    const key = document.getElementById('license-key').value;
+    const res = await fetch('/api/license', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, key })
+    });
+    const data = await res.json();
+    if (data.status === 'VALID') {
+      loadLicense();
+    } else {
+      alert('Invalid license');
+    }
+  };
+
 
   document.getElementById('update-btn').onclick = async () => {
     if (!confirm('Update PiBells now?')) return;
@@ -276,7 +321,10 @@
     window.location.href = '/rebooting';
   };
 
-  document.addEventListener('DOMContentLoaded', loadVersion);
+  document.addEventListener('DOMContentLoaded', () => {
+    loadVersion();
+    loadLicense();
+  });
   function updateTime() {
     const now = new Date();
     const pad = n => n.toString().padStart(2, '0');
