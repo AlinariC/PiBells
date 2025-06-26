@@ -379,7 +379,10 @@ footer .footer-right {
   border: none;
   cursor: pointer;
   font-size: 0.9em;
-  padding: 1px;
+  padding: 2px;
+  margin: 2px;
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 50%;
   transition: background 0.3s, transform 0.2s;
 }
