@@ -38,6 +38,7 @@
   <script>
 let audioFiles = [];
 let audioMap = {};
+const durations = {};
 
 function formatTime12h(str) {
   const parts = str.split(':');
@@ -103,7 +104,12 @@ async function loadButtons() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sound_file: btn.sound_file })
           });
-        } finally {
+          const d = Math.max((durations[btn.sound_file] || 1) * 1000, 500);
+          setTimeout(() => {
+            b.innerHTML = b.dataset.original;
+            b.disabled = false;
+          }, d);
+        } catch (e) {
           b.innerHTML = b.dataset.original;
           b.disabled = false;
         }
@@ -199,7 +205,12 @@ async function loadAudio() {
   const res = await fetch('/api/audio');
   audioFiles = await res.json();
   audioMap = {};
-  audioFiles.forEach(f => { audioMap[f.file] = f.name; });
+  audioFiles.forEach(f => {
+    audioMap[f.file] = f.name;
+    const a = new Audio('/audio/' + encodeURIComponent(f.file));
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => { durations[f.file] = a.duration; };
+  });
 }
 document.getElementById('set-schedule').onclick = async () => {
   const name = document.getElementById('schedule-select').value;
