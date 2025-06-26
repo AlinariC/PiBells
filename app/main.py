@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Iterable, Tuple
 from urllib import request
 import subprocess
+import shlex
 import secrets
 import spwd
 import crypt
@@ -34,6 +35,28 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # session token -> username mapping
 sessions: Dict[str, str] = {}
+
+# processes for looping playback
+loop_processes: List[subprocess.Popen] = []
+
+
+def stop_loops():
+    """Terminate any looping playback processes."""
+    global loop_processes
+    for proc in loop_processes:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    for proc in loop_processes:
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    loop_processes = []
 
 
 def authenticate_user(username: str, password: str) -> bool:
@@ -80,6 +103,7 @@ class QuickButton(BaseModel):
     sound_file: str
     color: str = "#ff0000"
     icon: str = ""
+    loop: bool = False
 
 
 class AudioFile(BaseModel):
@@ -231,28 +255,39 @@ def remove_schedule(name: str):
     save_all_schedules(data)
 
 
-def trigger_bell(sound_file: str):
+def trigger_bell(sound_file: str, loop: bool = False):
     """Play ``sound_file`` on all devices and the local sound card."""
+    global loop_processes
     devices = load_devices()
     path = AUDIO_DIR / sound_file
 
-    def play_local():
+    def play_local() -> Optional[subprocess.Popen]:
         """Play the audio file on the local sound card if possible."""
-        player_cmds = [
-            ["ffplay", "-nodisp", "-autoexit", str(path)],
-            ["aplay", str(path)],
-        ]
+        if loop:
+            player_cmds = [
+                ["ffplay", "-nodisp", "-autoexit", "-loop", "0", str(path)],
+                [
+                    "bash",
+                    "-c",
+                    f"while true; do aplay {shlex.quote(str(path))}; done",
+                ],
+            ]
+        else:
+            player_cmds = [
+                ["ffplay", "-nodisp", "-autoexit", str(path)],
+                ["aplay", str(path)],
+            ]
         for cmd in player_cmds:
             try:
-                subprocess.Popen(
+                return subprocess.Popen(
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
-                return
             except FileNotFoundError:
                 continue
         print("No audio player found (ffplay/aplay)")
+        return None
 
-    def send(device: str):
+    def send(device: str) -> Optional[subprocess.Popen]:
         ffmpeg_cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -263,6 +298,10 @@ def trigger_bell(sound_file: str):
             "+nobuffer",
             "-flush_packets",
             "1",
+        ]
+        if loop:
+            ffmpeg_cmd += ["-stream_loop", "-1"]
+        ffmpeg_cmd += [
             "-i",
             str(path),
             "-f",
@@ -274,22 +313,38 @@ def trigger_bell(sound_file: str):
             f"udp://{device}:3020",
         ]
         try:
-            subprocess.run(
-                ffmpeg_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True,
-            )
+            if loop:
+                return subprocess.Popen(
+                    ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            else:
+                subprocess.run(
+                    ffmpeg_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
         except FileNotFoundError as e:
             print(f"Failed to stream to {device}: {e}")
+        return None
 
     # Start local playback and send requests concurrently
-    threads = [threading.Thread(target=send, args=(d,), daemon=True) for d in devices]
-    for t in threads:
-        t.start()
-    threading.Thread(target=play_local, daemon=True).start()
-    for t in threads:
-        t.join()
+    if loop:
+        stop_loops()
+        procs = [send(d) for d in devices]
+        local_proc = play_local()
+        for p in procs:
+            if p:
+                loop_processes.append(p)
+        if local_proc:
+            loop_processes.append(local_proc)
+    else:
+        threads = [threading.Thread(target=send, args=(d,), daemon=True) for d in devices]
+        for t in threads:
+            t.start()
+        threading.Thread(target=play_local, daemon=True).start()
+        for t in threads:
+            t.join()
 
 
 def bell_daemon():
@@ -581,6 +636,7 @@ def delete_audio(filename: str):
 
 class TestRequest(BaseModel):
     sound_file: str
+    loop: Optional[bool] = False
 
 
 @app.get("/api/buttons", response_model=List[QuickButton])
@@ -620,8 +676,14 @@ def delete_button(index: int):
 def test_sound(req: TestRequest):
     if req.sound_file not in list_audio():
         raise HTTPException(status_code=404, detail="Sound file not found")
-    trigger_bell(req.sound_file)
+    trigger_bell(req.sound_file, loop=bool(req.loop))
     return {"status": "ok"}
+
+
+@app.post("/api/stop")
+def stop_sound():
+    stop_loops()
+    return {"status": "stopped"}
 
 
 @app.get("/login")

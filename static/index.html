@@ -61,6 +61,7 @@ async function loadButtons() {
     'fa-school': '<i class="fa-solid fa-school"></i>',
     'fa-music': '<i class="fa-solid fa-music"></i>'
   };
+  let playing = null;
   data.forEach(btn => {
     const b = document.createElement('button');
     const icon = iconMap[btn.icon] || btn.icon || '';
@@ -70,19 +71,39 @@ async function loadButtons() {
       b.textContent = btn.name;
     }
     b.style.background = btn.color;
-    const original = b.innerHTML;
+    b.dataset.original = b.innerHTML;
     b.onclick = async () => {
-      b.innerHTML = `<span class="icon"><i class="fa-solid fa-stop"></i></span> ${btn.name}`;
-      b.disabled = true;
-      try {
+      if (btn.loop) {
+        if (playing === b) {
+          await fetch('/api/stop', { method: 'POST' });
+          b.innerHTML = b.dataset.original;
+          playing = null;
+          return;
+        }
+        if (playing) {
+          await fetch('/api/stop', { method: 'POST' });
+          playing.innerHTML = playing.dataset.original;
+        }
+        b.innerHTML = `<span class="icon"><i class="fa-solid fa-stop"></i></span> ${btn.name}`;
+        playing = b;
         await fetch('/api/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sound_file: btn.sound_file })
+          body: JSON.stringify({ sound_file: btn.sound_file, loop: true })
         });
-      } finally {
-        b.innerHTML = original;
-        b.disabled = false;
+      } else {
+        b.innerHTML = `<span class="icon"><i class="fa-solid fa-stop"></i></span> ${btn.name}`;
+        b.disabled = true;
+        try {
+          await fetch('/api/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sound_file: btn.sound_file })
+          });
+        } finally {
+          b.innerHTML = b.dataset.original;
+          b.disabled = false;
+        }
       }
     };
     container.appendChild(b);
