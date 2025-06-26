@@ -58,7 +58,7 @@ If you prefer to do things yourself, see [`install.sh`](install.sh) for the comm
 5. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
 
 ## Versioning
-The current version is defined in [`app/__init__.py`](app/__init__.py). The admin page now checks the latest GitHub release and lets you upgrade with a single click.
+The current version is automatically detected from the latest git tag. The admin page checks the newest GitHub release and lets you upgrade with a single click.
 
 ---
 
