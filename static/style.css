@@ -448,7 +448,7 @@ button.btn {
 .btn.btn-danger {
   background: linear-gradient(45deg, #ff4b5c, #e02424);
 }
-.settings-page button:not(.theme-btn) {
+.settings-page button:not(.theme-btn):not(.hamburger) {
   width: auto;
   display: inline-flex;
   align-items: center;
