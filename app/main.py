@@ -5,7 +5,7 @@ import time
 from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Dict, List, Optional, Iterable, Tuple
-from urllib import request
+from urllib import request, parse
 import subprocess
 import shlex
 import secrets
@@ -26,6 +26,7 @@ BUTTONS_FILE = BASE_DIR / "buttons.json"
 AUDIO_DIR = BASE_DIR / "audio"
 AUDIO_DIR.mkdir(exist_ok=True)
 AUDIO_META_FILE = BASE_DIR / "audio.json"
+LICENSE_FILE = BASE_DIR / "license.json"
 SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
 STATIC_DIR = BASE_DIR / "static"
 
@@ -207,6 +208,39 @@ def load_audio_meta() -> Dict[str, str]:
 def save_audio_meta(meta: Dict[str, str]):
     with open(AUDIO_META_FILE, "w") as f:
         json.dump(meta, f)
+
+
+def load_license() -> Dict[str, str]:
+    """Return saved license information or an unlicensed status."""
+    if not LICENSE_FILE.exists():
+        return {"status": "UNLICENSED"}
+    try:
+        with open(LICENSE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"status": "UNLICENSED"}
+
+
+def save_license(data: Dict[str, str]):
+    with open(LICENSE_FILE, "w") as f:
+        json.dump(data, f)
+
+
+def check_license(email: str, key: str) -> Dict[str, str]:
+    """Verify a license key with the PixelPacific licensing server."""
+    url = (
+        f"http://pixelpacific.com:5000/check/{key}?email={parse.quote(email)}"
+    )
+    try:
+        with request.urlopen(url, timeout=5) as resp:
+            data = json.load(resp)
+        return {
+            "status": data.get("status", "INVALID"),
+            "expires": data.get("expires", ""),
+        }
+    except Exception as e:
+        print("License check failed:", e)
+        return {"status": "INVALID", "expires": ""}
 
 
 def get_local_ip() -> str:
@@ -516,6 +550,30 @@ def get_latest_version() -> str:
 def version_info():
     """Return current and latest PiBells version."""
     return {"current": __version__, "latest": get_latest_version()}
+
+
+class LicenseBody(BaseModel):
+    email: str
+    key: str
+
+
+@app.get("/api/license")
+def get_license_info():
+    """Return current license status."""
+    return load_license()
+
+
+@app.post("/api/license")
+def register_license(body: LicenseBody):
+    result = check_license(body.email, body.key)
+    if result.get("status") == "VALID":
+        save_license({
+            "email": body.email,
+            "key": body.key,
+            "expires": result.get("expires", ""),
+            "status": "VALID",
+        })
+    return result
 
 
 @app.post("/api/update")
