@@ -270,8 +270,14 @@
     const ampm = hours >= 12 ? 'PM' : 'AM';
     hours = hours % 12;
     if (hours === 0) hours = 12;
-    const str = `${days[now.getDay()]} ${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
-    document.getElementById('current-time').textContent = str;
+    const dayStr = days[now.getDay()];
+    const timeStr = `${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
+    const el = document.getElementById('current-time');
+    if (window.matchMedia('(max-width: 700px)').matches) {
+      el.innerHTML = `${dayStr}<br>${timeStr}`;
+    } else {
+      el.textContent = `${dayStr} ${timeStr}`;
+    }
   }
   updateTime();
   setInterval(updateTime, 1000);
