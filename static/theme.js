@@ -31,7 +31,20 @@ function initTheme() {
 
 }
 
-document.addEventListener('DOMContentLoaded', initTheme);
+function initMenu() {
+  const toggle = document.getElementById('menu-toggle');
+  const nav = document.querySelector('header nav');
+  if (toggle && nav) {
+    toggle.addEventListener('click', () => {
+      nav.classList.toggle('show');
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
+  initMenu();
+});
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
