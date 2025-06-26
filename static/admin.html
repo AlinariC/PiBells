@@ -249,6 +249,7 @@
   document.getElementById('reboot-btn').onclick = async () => {
     if (!confirm('Reboot the device now?')) return;
     await fetch('/api/reboot', { method: 'POST' });
+    window.location.href = '/rebooting';
   };
 
   document.addEventListener('DOMContentLoaded', loadVersion);
