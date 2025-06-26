@@ -54,6 +54,7 @@ async def auth_middleware(request: Request, call_next):
         or path == "/login"
         or path == "/logout"
         or path == "/api/network"
+        or path == "/rebooting"
     ):
         return await call_next(request)
     token = request.cookies.get("session")
@@ -677,3 +678,8 @@ def manifest_file():
 @app.get("/service-worker.js")
 def service_worker():
     return FileResponse("static/service-worker.js", media_type="application/javascript")
+
+
+@app.get("/rebooting")
+def rebooting_page():
+    return FileResponse("static/rebooting.html")

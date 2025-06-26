@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <meta name="theme-color" content="#4facfe">
+  <title>Rebooting - PiBells</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/css/all.min.css">
+</head>
+<body>
+  <div class="login-container">
+    <img src="/static/pibells-logo.png" alt="PiBells logo" class="login-logo" />
+    <div style="margin:20px 0;">
+      <i class="fa-solid fa-spinner fa-spin fa-3x"></i>
+    </div>
+    <p>Rebooting, please wait...</p>
+  </div>
+  <script src="/static/theme.js"></script>
+  <script>
+    setTimeout(() => {
+      location.replace('/login');
+    }, 60000);
+  </script>
+</body>
+</html>
