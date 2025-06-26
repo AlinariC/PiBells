@@ -138,6 +138,8 @@
     };
   };
 
+  const durations = {};
+
   async function loadAudio() {
     const res = await fetch('/api/audio');
     const data = await res.json();
@@ -146,6 +148,12 @@
     data.forEach(file => {
       const div = document.createElement('div');
       div.className = 'audio-item';
+
+      const audio = new Audio('/audio/' + encodeURIComponent(file.file));
+      audio.preload = 'metadata';
+      audio.onloadedmetadata = () => {
+        durations[file.file] = audio.duration;
+      };
 
       const name = document.createElement('div');
       name.className = 'audio-name';
@@ -172,7 +180,12 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sound_file: file.file })
           });
-        } finally {
+          const delay = Math.max((durations[file.file] || 1) * 1000, 500);
+          setTimeout(() => {
+            testBtn.innerHTML = original;
+            testBtn.disabled = false;
+          }, delay);
+        } catch (e) {
           testBtn.innerHTML = original;
           testBtn.disabled = false;
         }
