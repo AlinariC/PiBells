@@ -49,12 +49,6 @@
 
   <hr class="section-divider">
   <h2>Software</h2>
-  <p id="version-display"></p>
-  <div class="update-actions">
-    <button id="update-btn" class="btn"><span class="icon"><i class="fa-solid fa-download"></i></span> Update</button>
-    <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
-    <div id="update-message" class="update-message" style="display:none;"></div>
-  </div>
   <div id="license-box">
     <span id="license-status" class="license-status"></span>
     <form id="license-form" class="license-form" style="display:none;">
@@ -62,6 +56,12 @@
       <input type="text" id="license-key" placeholder="License Key" required>
       <button type="submit" class="btn">Register</button>
     </form>
+  </div>
+  <p id="version-display"></p>
+  <div class="update-actions">
+    <button id="update-btn" class="btn"><span class="icon"><i class="fa-solid fa-download"></i></span> Update</button>
+    <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
+    <div id="update-message" class="update-message" style="display:none;"></div>
   </div>
   <script>
   async function loadDevices() {
