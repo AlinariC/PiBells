@@ -216,7 +216,18 @@ def load_license() -> Dict[str, str]:
         return {"status": "UNLICENSED"}
     try:
         with open(LICENSE_FILE) as f:
-            return json.load(f)
+            data = json.load(f)
+        if (
+            data.get("status") == "VALID"
+            and not data.get("name")
+            and data.get("email")
+            and data.get("key")
+        ):
+            refreshed = check_license(data["email"], data["key"])
+            if refreshed.get("status") == "VALID":
+                data.update(refreshed)
+                save_license(data)
+        return data
     except Exception:
         return {"status": "UNLICENSED"}
 
@@ -228,9 +239,7 @@ def save_license(data: Dict[str, str]):
 
 def check_license(email: str, key: str) -> Dict[str, str]:
     """Verify a license key with the PixelPacific licensing server."""
-    url = (
-        f"http://pixelpacific.com:5000/check/{key}?email={parse.quote(email)}"
-    )
+    url = f"http://pixelpacific.com:5000/check/{key}?email={parse.quote(email)}"
     try:
         with request.urlopen(url, timeout=5) as resp:
             data = json.load(resp)
@@ -374,7 +383,9 @@ def trigger_bell(sound_file: str, loop: bool = False):
         if local_proc:
             loop_processes.append(local_proc)
     else:
-        threads = [threading.Thread(target=send, args=(d,), daemon=True) for d in devices]
+        threads = [
+            threading.Thread(target=send, args=(d,), daemon=True) for d in devices
+        ]
         for t in threads:
             t.start()
         threading.Thread(target=play_local, daemon=True).start()
@@ -568,13 +579,15 @@ def get_license_info():
 def register_license(body: LicenseBody):
     result = check_license(body.email, body.key)
     if result.get("status") == "VALID":
-        save_license({
-            "email": body.email,
-            "key": body.key,
-            "expires": result.get("expires", ""),
-            "name": result.get("name", ""),
-            "status": "VALID",
-        })
+        save_license(
+            {
+                "email": body.email,
+                "key": body.key,
+                "expires": result.get("expires", ""),
+                "name": result.get("name", ""),
+                "status": "VALID",
+            }
+        )
     return result
 
 
