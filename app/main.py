@@ -237,6 +237,7 @@ def check_license(email: str, key: str) -> Dict[str, str]:
         return {
             "status": data.get("status", "INVALID"),
             "expires": data.get("expires", ""),
+            "name": data.get("name", ""),
         }
     except Exception as e:
         print("License check failed:", e)
@@ -571,6 +572,7 @@ def register_license(body: LicenseBody):
             "email": body.email,
             "key": body.key,
             "expires": result.get("expires", ""),
+            "name": result.get("name", ""),
             "status": "VALID",
         })
     return result

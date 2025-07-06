@@ -265,7 +265,8 @@
       const statusEl = document.getElementById('license-status');
       const form = document.getElementById('license-form');
       if (data.status === 'VALID') {
-        statusEl.textContent = `Licensed through ${data.expires}`;
+        const name = data.name ? `Registered to: ${data.name} \u2013 ` : '';
+        statusEl.textContent = `${name}Licensed through ${data.expires}`;
         statusEl.classList.remove('unlicensed');
         form.style.display = 'none';
       } else {
