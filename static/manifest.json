@@ -3,8 +3,8 @@
   "short_name": "PiBells",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#4facfe",
+  "background_color": "#f6f7f9",
+  "theme_color": "#0f766e",
   "icons": [
     {
       "src": "/static/icons/icon-192.png",
@@ -14,6 +14,11 @@
     {
       "src": "/static/icons/icon-512.png",
       "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-1024.png",
+      "sizes": "1024x1024",
       "type": "image/png"
     }
   ]

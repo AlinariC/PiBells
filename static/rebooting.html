@@ -1,27 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-  <meta name="theme-color" content="#4facfe">
-  <title>Rebooting - PiBells</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/favicons/favicon.ico" sizes="any">
+  <link rel="icon" href="/static/favicons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicons/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicons/apple-touch-icon.png">
+  <link rel="mask-icon" href="/static/favicons/safari-pinned-tab.svg" color="#0f766e">
+  <title>PiBells Rebooting</title>
   <link rel="stylesheet" href="/static/css/all.min.css">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-  <div class="login-container">
-    <img src="/static/pibells-logo.png" alt="PiBells logo" class="login-logo" />
-    <div style="margin:20px 0;">
-      <i class="fa-solid fa-spinner fa-spin fa-3x"></i>
-    </div>
-    <p>Rebooting, please wait...</p>
-  </div>
-  <script src="/static/theme.js"></script>
-  <script>
-    setTimeout(() => {
-      location.replace('/login');
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card reboot-card">
+      <img src="/static/logo.svg" alt="PiBells logo" class="auth-logo">
+      <div class="reboot-spinner" aria-hidden="true"></div>
+      <h1>Rebooting</h1>
+      <p class="subtle">PiBells will return to the login screen shortly.</p>
+    </section>
+  </main>
+  <script type="module">
+    import { initAuthShell } from "/static/app.js";
+    initAuthShell();
+    window.setTimeout(() => {
+      window.location.replace("/login");
     }, 60000);
   </script>
 </body>

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 # PiBells installation script
-# Run this script with sudo to install PiBells as a systemd service
+# Run with sudo on Raspberry Pi OS.
 
-set -e
+set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run with sudo or as root" >&2
@@ -12,48 +12,44 @@ fi
 
 apt-get update
 apt-get upgrade -y
-apt-get install -y python3 python3-pip python3-venv git nginx neofetch ffmpeg alsa-utils netcat-openbsd
+apt-get install -y python3 python3-pip python3-venv git nginx ffmpeg alsa-utils netcat-openbsd
 
 TARGET_USER=${SUDO_USER:-pibells}
 HOME_DIR=$(eval echo "~$TARGET_USER")
-
-# allow the service account to read /etc/shadow for authentication
-usermod -aG shadow "$TARGET_USER"
-
-# set up python virtual environment for the target user
 VENV_DIR="$HOME_DIR/pibells-venv"
+INSTALL_DIR="$HOME_DIR/PiBells"
+
 if [ ! -d "$VENV_DIR" ]; then
   sudo -u "$TARGET_USER" python3 -m venv "$VENV_DIR"
 fi
 
-# install required packages inside the virtual environment
-sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install --upgrade pip
-sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install fastapi uvicorn python-multipart
-INSTALL_DIR="$HOME_DIR/PiBells"
-
-if [ -d "$INSTALL_DIR" ]; then
+if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing PiBells repo in $INSTALL_DIR"
-  git -C "$INSTALL_DIR" pull
+  git -C "$INSTALL_DIR" pull --ff-only
 else
   echo "Cloning PiBells repo to $INSTALL_DIR"
   git clone https://github.com/alinaric/PiBells.git "$INSTALL_DIR"
 fi
 
-# ensure the repository is writable by the target user
 chown -R "$TARGET_USER":"$TARGET_USER" "$INSTALL_DIR"
+
+sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install --upgrade pip
+sudo -u "$TARGET_USER" "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
 SERVICE_FILE=/etc/systemd/system/pibells.service
 
 cat > "$SERVICE_FILE" <<SERVICE
 [Unit]
 Description=PiBells Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 User=$TARGET_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV_DIR/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=$VENV_DIR/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -63,18 +59,22 @@ systemctl daemon-reload
 systemctl enable pibells
 systemctl restart pibells
 
-# configure nginx reverse proxy
 NGINX_CONF=/etc/nginx/sites-available/pibells
 cat > "$NGINX_CONF" <<'NGINX'
 server {
     listen 80;
     server_name _;
+
+    client_max_body_size 100m;
+
     location / {
         proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
     }
 }
 NGINX
@@ -83,7 +83,6 @@ ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/pibells
 rm -f /etc/nginx/sites-enabled/default
 systemctl restart nginx
 
-# install PiBells login banner
 BANNER_DIR=/etc/pibells
 mkdir -p "$BANNER_DIR"
 cat > "$BANNER_DIR/pibells-ascii.txt" <<'EOF'
@@ -100,8 +99,11 @@ EOF
 cat > /usr/local/bin/pibells-banner.sh <<'EOF'
 #!/usr/bin/env bash
 IP=$(hostname -I | awk '{print $1}')
-neofetch --ascii "/etc/pibells/pibells-ascii.txt" --color_blocks off --stdout > /etc/issue
-echo "IP Address: $IP" >> /etc/issue
+{
+  cat /etc/pibells/pibells-ascii.txt
+  echo
+  echo "PiBells: http://$IP/"
+} > /etc/issue
 EOF
 chmod +x /usr/local/bin/pibells-banner.sh
 
@@ -123,4 +125,6 @@ systemctl daemon-reload
 systemctl enable pibells-banner
 systemctl start pibells-banner
 
-echo "PiBells installation complete. Service is running."
+IP_ADDRESS=$(hostname -I | awk '{print $1}')
+echo "PiBells installation complete."
+echo "Open http://$IP_ADDRESS/ and create the first admin account."

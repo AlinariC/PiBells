@@ -5,62 +5,80 @@
 <h1 align="center">PiBells</h1>
 
 <p align="center">
-  <b>Network bell scheduling for Raspberry Pi</b><br>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PPPL%201.0-blue" alt="License"></a>
-  <a href="https://pixelpacific.com"><img src="https://img.shields.io/badge/PixelPacific-Website-blue" alt="PixelPacific"></a>
+  <b>Network bell scheduling for Raspberry Pi</b>
 </p>
 
-PiBells is a lightweight bell scheduler built with FastAPI. It turns a Raspberry Pi into a dedicated bell controller that you manage entirely from your browser. Upload sounds, create schedules and configure your Barix devices without touching the command line. Designed for Raspberry Pi OS Lite (64‑bit), PiBells runs quietly in the background and continues to work even without an internet connection.
+PiBells turns a Raspberry Pi into a browser-managed bell controller. It can play audio locally, stream bells to Barix devices, scan the local network for devices, and maintain multiple weekly schedules from a compact web console.
+
+## What changed in this revival
+
+- Removed the retired licensing server integration and all registration UI/API code.
+- Replaced deprecated Linux shadow-password authentication with a first-run PiBells admin account.
+- Added stable schedule and quick-button IDs so events can be edited safely.
+- Added safer JSON persistence, file upload naming, duplicate device handling, and path traversal protection.
+- Reworked the interface into a modern dashboard with shared navigation, responsive layouts, dark/light themes, and clearer operational states.
 
 ## Features
-- 📅 Create multiple schedules from your browser
-- 🔊 Stream bells to Barix devices using UDP on port 3020 or play audio locally
-- 🌐 Scan your network to discover devices automatically
-- 🎵 Upload MP3, WAV, OGG or M4A files as bell sounds
-- 🗑 Delete old audio files to free up space
-- 🔘 Create custom quick-play buttons
-- 🔄 Update the software from the admin page
-- 🔐 Password-protected web interface
-- 📈 Login banner displays the Pi's IP address
-- ⚙️ Works offline after installation
-- ✨ Modern animated UI with light and dark themes
+
+- Multiple named schedules with a weekly event board
+- Enable, disable, edit, play, and delete individual bell events
+- Quick-play buttons with colors, icons, and optional loop-until-stopped playback
+- Audio upload, rename, test, and protected delete behavior
+- Barix device management with nickname support, online status checks, and selectable multi-range discovery
+- Local Raspberry Pi playback through `ffplay` or `aplay`
+- UDP streaming to Barix devices on port `3030`
+- First-run admin setup and password change from the settings page
+- Reboot control from the web UI
+- PWA manifest and cached static assets for resilient local use
 
 ## Hardware
-- 🤖 Raspberry Pi 4 Model B (4 GB+ recommended)
-- 💾 microSD card (8 GB or larger) with Raspberry Pi OS Lite (64-bit)
-- 🌐 Network connection (Ethernet or Wi-Fi)
-- 🔈 Optional Barix Exstreamer or local speaker
+
+- Raspberry Pi 4 or newer recommended
+- Raspberry Pi OS Lite 64-bit
+- Network connection by Ethernet or Wi-Fi
+- Optional Barix Exstreamer devices or a local speaker
 
 ## Installation
-Run the install script on your Pi with `sudo`:
+
+Run the installer on the Pi with `sudo`:
 
 ```bash
 curl -L https://raw.githubusercontent.com/alinaric/PiBells/main/install.sh | sudo bash
 ```
 
-The script installs dependencies, sets up a virtual environment, clones the repo and creates a `systemd` service so PiBells starts on boot. You can run the same command again at any time to update.
+The script installs system dependencies, creates a Python virtual environment, clones or updates the repo, installs Python packages from `requirements.txt`, and configures PiBells behind nginx as a systemd service.
 
-Once the service is running, open `http://<raspberrypi-ip>/` in your browser to log in and configure your bells.
+After installation, open:
 
-### Manual steps
-If you prefer to do things yourself, see [`install.sh`](install.sh) for the commands.
+```text
+http://<raspberrypi-ip>/
+```
 
-## Preparing the Raspberry Pi
-1. Use **Raspberry Pi Imager** and select the **Raspberry Pi OS Lite (64-bit)** image.
-2. In the Imager's advanced options, set the username to **pibells**, choose a password, configure your network and enable SSH if desired.
-3. Insert the card into the Pi, power it on and wait for it to connect to your network.
-4. Before installing, add your PiBells account to the `shadow` group so the service can verify passwords:
+On first launch PiBells redirects to `/setup`, where you create the local admin account. No external licensing server is required.
 
-   ```bash
-   sudo usermod -aG shadow pibells
-   ```
+## Local Development
 
-5. Log in as the user you configured and run the install script above. It will update the system and install all dependencies.
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+PIBELLS_DISABLE_DAEMON=1 uvicorn app.main:app --reload
+```
 
-## Versioning
-The current version is automatically detected from the latest git tag. The admin page checks the newest GitHub release and lets you upgrade with a single click.
+Then open `http://127.0.0.1:8000/`.
 
----
+Runtime data such as `pibells-auth.json`, `audio.json`, and `buttons.json` is intentionally ignored by git.
 
-Distributed under the [PixelPacific Public License (PPPL 1.0)](LICENSE).  
-Learn more about PixelPacific at [pixelpacific.com](https://pixelpacific.com).
+## Testing
+
+```bash
+PIBELLS_DISABLE_DAEMON=1 pytest
+```
+
+## Notes
+
+- Existing `schedule.json` files without event IDs are migrated automatically.
+- Existing `buttons.json` files without button IDs are migrated automatically.
+- Uploaded audio filenames are sanitized and de-duplicated.
+- Deleting audio that is used by schedules or quick buttons requires confirmation in the UI and removes those references when forced.
+- Barix UDP discovery uses port `30718`. Active subnet discovery can be narrowed with saved CIDR ranges such as `10.80.2.0/24`.

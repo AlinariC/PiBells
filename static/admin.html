@@ -1,375 +1,167 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-  <meta name="theme-color" content="#4facfe">
-  <title>Device Configuration</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/favicons/favicon.ico" sizes="any">
+  <link rel="icon" href="/static/favicons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicons/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicons/apple-touch-icon.png">
+  <link rel="mask-icon" href="/static/favicons/safari-pinned-tab.svg" color="#0f766e">
+  <title>PiBells Settings</title>
   <link rel="stylesheet" href="/static/css/all.min.css">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="settings-page">
-  <header>
-    <a href="/">
-      <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
+<body data-page="admin">
+  <header class="app-header">
+    <a href="/" class="brand" aria-label="PiBells home">
+      <img src="/static/logo.svg" alt="PiBells logo">
+      <span>PiBells</span>
     </a>
-    <div id="current-time"></div>
-    <button id="menu-toggle" class="hamburger"><i class="fa-solid fa-bars"></i></button>
-    <nav>
-      <a href="/"><span class="icon"><i class="fa-solid fa-arrow-left"></i></span> Back to Schedule</a>
-      <a href="/logout"><span class="icon"><i class="fa-solid fa-right-from-bracket"></i></span> Logout</a>
+    <div id="current-time" class="clock"></div>
+    <button id="menu-toggle" class="icon-btn nav-toggle" type="button" title="Menu" aria-expanded="false">
+      <i class="fa-solid fa-bars" aria-hidden="true"></i>
+    </button>
+    <nav class="app-nav" aria-label="Primary">
+      <a href="/" data-nav="schedule"><i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span>Schedule</span></a>
+      <a href="/buttons" data-nav="buttons"><i class="fa-solid fa-bell" aria-hidden="true"></i><span>Buttons</span></a>
+      <a href="/admin" data-nav="admin"><i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span></a>
     </nav>
+    <div class="header-actions">
+      <div class="theme-switch" aria-label="Theme">
+        <button class="theme-btn" data-theme="light" type="button" title="Light"><i class="fa-solid fa-sun" aria-hidden="true"></i></button>
+        <button class="theme-btn" data-theme="auto" type="button" title="Auto"><i class="fa-solid fa-circle-half-stroke" aria-hidden="true"></i></button>
+        <button class="theme-btn" data-theme="dark" type="button" title="Dark"><i class="fa-solid fa-moon" aria-hidden="true"></i></button>
+      </div>
+      <a class="icon-btn" href="/logout" title="Logout"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></a>
+    </div>
   </header>
-  <h1>Barix Devices</h1>
-  <form id="add-form">
-    <label>Device IP: <input type="text" id="ip" placeholder="192.168.1.10" required></label>
-    <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
-    <button type="button" id="scan-btn" class="btn"><span class="icon"><i class="fa-solid fa-magnifying-glass"></i></span> Scan Network</button>
-  </form>
-  <progress id="scan-progress" value="0" max="254" style="display:none;"></progress>
-  <table id="devices">
-    <thead><tr><th>IP</th><th>Status</th><th>Actions</th></tr></thead>
-    <tbody></tbody>
-  </table>
 
-  <hr class="section-divider">
-  <h2>Audio Files</h2>
-  <div class="upload-box">
-    <h3>Add New File</h3>
-    <form id="upload-form">
-      <input type="file" id="audio-file" accept="audio/*" required>
-      <input type="text" id="audio-name" placeholder="Name" required>
-      <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-upload"></i></span> Upload</button>
-    </form>
-  </div>
-  <div id="audio-list" class="audio-grid"></div>
+  <main class="app-main">
+    <section class="page-heading">
+      <div>
+        <p class="eyebrow">Hardware, audio, and system controls</p>
+        <h1>System Settings</h1>
+      </div>
+    </section>
 
+    <section class="workspace-grid settings-grid">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Barix Devices</h2>
+          <button id="scan-btn" class="btn secondary" type="button"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><span>Scan</span></button>
+        </div>
+        <form id="add-device-form" class="inline-form">
+          <label>
+            <span>Device IP</span>
+            <input id="device-ip" type="text" inputmode="decimal" placeholder="192.168.1.10" required>
+          </label>
+          <label>
+            <span>Nickname</span>
+            <input id="device-name" type="text" placeholder="Gym bells" autocomplete="off">
+          </label>
+          <button class="btn" type="submit"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add</span></button>
+        </form>
+        <div class="table-wrap">
+          <table id="devices">
+            <thead>
+              <tr><th>Name</th><th>Address</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
 
-  <hr class="section-divider">
-  <h2>Software</h2>
-  <div id="license-box">
-    <span id="license-status" class="license-status"></span>
-    <form id="license-form" class="license-form" style="display:none;">
-      <input type="email" id="license-email" placeholder="Email" required>
-      <input type="text" id="license-key" placeholder="License Key" required>
-      <button type="submit" class="btn">Register</button>
-    </form>
-  </div>
-  <p id="version-display"></p>
-  <div class="update-actions">
-    <button id="update-btn" class="btn"><span class="icon"><i class="fa-solid fa-download"></i></span> Update</button>
-    <button id="reboot-btn" class="btn"><span class="icon"><i class="fa-solid fa-plug"></i></span> Reboot</button>
-    <div id="update-message" class="update-message" style="display:none;"></div>
-  </div>
-  <script>
-  async function loadDevices() {
-    const res = await fetch('/api/devices');
-    const data = await res.json();
-    const tbody = document.querySelector('#devices tbody');
-    tbody.innerHTML = '';
-    data.forEach((ip, i) => {
-      const tr = document.createElement('tr');
-      const ipTd = document.createElement('td');
-      ipTd.textContent = ip;
-      const statusTd = document.createElement('td');
-      statusTd.innerHTML = '<span class="status-icon icon" data-ip="' + ip + '">●</span>';
-      const btn = document.createElement('button');
-      btn.className = 'btn btn-danger';
-      btn.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
-      btn.onclick = async () => {
-        await fetch('/api/devices/' + i, { method: 'DELETE' });
-        loadDevices();
-      };
-      const actionTd = document.createElement('td');
-      actionTd.appendChild(btn);
-      tr.appendChild(ipTd);
-      tr.appendChild(statusTd);
-      tr.appendChild(actionTd);
-      tbody.appendChild(tr);
-    });
-    updateStatuses();
-  }
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Audio Library</h2>
+        </div>
+        <form id="upload-form" class="upload-form">
+          <label class="file-field">
+            <span>Audio file</span>
+            <input id="audio-file" type="file" accept="audio/*" required>
+          </label>
+          <label>
+            <span>Display name</span>
+            <input id="audio-name" type="text" placeholder="Standard bell" required>
+          </label>
+          <button id="upload-submit" class="btn" type="submit"><i class="fa-solid fa-upload" aria-hidden="true"></i><span>Upload</span></button>
+        </form>
+        <div id="audio-list" class="media-list"></div>
+      </section>
 
-  async function updateStatuses() {
-    const res = await fetch('/api/devices/status');
-    const data = await res.json();
-    document.querySelectorAll('.status-icon').forEach(icon => {
-      const ip = icon.dataset.ip;
-      if (data[ip]) {
-        icon.style.color = 'green';
-      } else {
-        icon.style.color = 'red';
-      }
-    });
-  }
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Device Power</h2>
+        </div>
+        <div class="action-strip">
+          <button id="reboot-btn" class="btn danger-btn" type="button"><i class="fa-solid fa-power-off" aria-hidden="true"></i><span>Reboot</span></button>
+        </div>
+      </section>
 
-  setInterval(updateStatuses, 5000);
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Admin Account</h2>
+          <span id="account-name" class="subtle-pill">Admin</span>
+        </div>
+        <form id="password-form" class="stack-form">
+          <label>
+            <span>Current password</span>
+            <input id="current-password" type="password" autocomplete="current-password" required>
+          </label>
+          <label>
+            <span>New password</span>
+            <input id="new-password" type="password" autocomplete="new-password" minlength="8" required>
+          </label>
+          <label>
+            <span>Confirm password</span>
+            <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required>
+          </label>
+          <button class="btn" type="submit"><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i><span>Save Password</span></button>
+        </form>
+      </section>
+    </section>
+  </main>
 
-  document.getElementById('add-form').onsubmit = async (e) => {
-    e.preventDefault();
-    const ip = document.getElementById('ip').value;
-    await fetch('/api/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ip })
-    });
-    e.target.reset();
-    loadDevices();
-  };
-
-  loadDevices();
-
-  document.getElementById('scan-btn').onclick = () => {
-    const url = '/api/devices/scan_stream';
-    const progress = document.getElementById('scan-progress');
-    progress.value = 0;
-    progress.style.display = 'inline';
-    const es = new EventSource(url);
-    es.onmessage = async (e) => {
-      const data = JSON.parse(e.data);
-      if ('progress' in data) progress.value = data.progress;
-      if (data.device) {
-        await fetch('/api/devices', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip: data.device })
-        });
-      }
-      if (data.complete || data.error) {
-        es.close();
-        progress.style.display = 'none';
-        if (data.error) alert(data.error);
-        loadDevices();
-      }
-    };
-  };
-
-  const durations = {};
-
-  async function loadAudio() {
-    const res = await fetch('/api/audio');
-    const data = await res.json();
-    const list = document.getElementById('audio-list');
-    list.innerHTML = '';
-    data.forEach(file => {
-      const div = document.createElement('div');
-      div.className = 'audio-item';
-
-      const audio = new Audio('/audio/' + encodeURIComponent(file.file));
-      audio.preload = 'metadata';
-      audio.onloadedmetadata = () => {
-        durations[file.file] = audio.duration;
-      };
-
-      const name = document.createElement('div');
-      name.className = 'audio-name';
-      const icon = document.createElement('i');
-      icon.className = 'fa-solid fa-music audio-icon';
-      name.appendChild(icon);
-      name.appendChild(document.createTextNode(file.name));
-      div.appendChild(name);
-
-      const actions = document.createElement('div');
-      actions.className = 'audio-actions';
-
-      const testBtn = document.createElement('button');
-      testBtn.className = 'icon-btn test-icon';
-      testBtn.title = 'Test';
-      testBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
-      const original = testBtn.innerHTML;
-      testBtn.onclick = async () => {
-        testBtn.innerHTML = '<i class="fa-solid fa-stop"></i>';
-        testBtn.disabled = true;
-        try {
-          await fetch('/api/test', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sound_file: file.file })
-          });
-          const delay = Math.max((durations[file.file] || 1) * 1000, 500);
-          setTimeout(() => {
-            testBtn.innerHTML = original;
-            testBtn.disabled = false;
-          }, delay);
-        } catch (e) {
-          testBtn.innerHTML = original;
-          testBtn.disabled = false;
-        }
-      };
-      actions.appendChild(testBtn);
-
-      const edit = document.createElement('button');
-      edit.className = 'icon-btn edit-icon';
-      edit.title = 'Rename';
-      edit.innerHTML = '<i class="fa-solid fa-pen"></i>';
-      edit.onclick = async () => {
-        const name = prompt('New name:', file.name);
-        if (!name) return;
-        await fetch('/api/audio/' + encodeURIComponent(file.file), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name })
-        });
-        loadAudio();
-      };
-      actions.appendChild(edit);
-
-      const del = document.createElement('button');
-      del.className = 'icon-btn danger';
-      del.title = 'Delete';
-      del.innerHTML = '<i class="fa-solid fa-trash"></i>';
-      del.onclick = async () => {
-        if (!confirm('Delete this file?')) return;
-        await fetch('/api/audio/' + encodeURIComponent(file.file), { method: 'DELETE' });
-        loadAudio();
-      };
-      actions.appendChild(del);
-
-      div.appendChild(actions);
-      list.appendChild(div);
-    });
-  }
-
-  document.getElementById('upload-form').onsubmit = async (e) => {
-    e.preventDefault();
-    const fileInput = document.getElementById('audio-file');
-    const nameInput = document.getElementById('audio-name');
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    formData.append('name', nameInput.value);
-    await fetch('/api/audio', { method: 'POST', body: formData });
-    fileInput.value = '';
-    nameInput.value = '';
-    loadAudio();
-  };
-
-  loadAudio();
-
-  async function loadVersion() {
-    try {
-      const res = await fetch('/api/version');
-      const data = await res.json();
-      document.getElementById('version-display').textContent =
-        `Version: ${data.current} (latest ${data.latest})`;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  async function loadLicense() {
-    try {
-      const res = await fetch('/api/license');
-      const data = await res.json();
-      const statusEl = document.getElementById('license-status');
-      const form = document.getElementById('license-form');
-      if (data.status === 'VALID') {
-        const name = data.name ? `Registered to: ${data.name} \u2013 ` : '';
-        statusEl.textContent = `${name}Licensed through ${data.expires}`;
-        statusEl.classList.remove('unlicensed');
-        form.style.display = 'none';
-      } else {
-        statusEl.textContent = 'Unlicensed';
-        statusEl.classList.add('unlicensed');
-        form.style.display = 'flex';
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  document.getElementById('license-form').onsubmit = async (e) => {
-    e.preventDefault();
-    const email = document.getElementById('license-email').value;
-    const key = document.getElementById('license-key').value;
-    const res = await fetch('/api/license', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, key })
-    });
-    const data = await res.json();
-    if (data.status === 'VALID') {
-      loadLicense();
-    } else {
-      alert('Invalid license');
-    }
-  };
-
-
-  document.getElementById('update-btn').onclick = async () => {
-    if (!confirm('Update PiBells now?')) return;
-    const btn = document.getElementById('update-btn');
-    const msg = document.getElementById('update-message');
-    btn.disabled = true;
-    msg.style.display = 'none';
-    try {
-      const res = await fetch('/api/update', { method: 'POST' });
-      if (!res.ok) throw new Error('Update failed');
-      msg.innerHTML = '<span class="icon"><i class="fa-solid fa-circle-check"></i></span> Update complete, please reboot system.';
-      msg.style.display = 'inline-flex';
-    } catch (e) {
-      alert(e);
-    } finally {
-      btn.disabled = false;
-      loadVersion();
-    }
-  };
-
-  document.getElementById('reboot-btn').onclick = async () => {
-    if (!confirm('Reboot the device now?')) return;
-    await fetch('/api/reboot', { method: 'POST' });
-    window.location.href = '/rebooting';
-  };
-
-  document.addEventListener('DOMContentLoaded', () => {
-    loadVersion();
-    loadLicense();
-  });
-  function updateTime() {
-    const now = new Date();
-    const pad = n => n.toString().padStart(2, '0');
-    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    let hours = now.getHours();
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12;
-    if (hours === 0) hours = 12;
-    const dayStr = days[now.getDay()];
-    const timeStr = `${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
-    const el = document.getElementById('current-time');
-    if (window.matchMedia('(max-width: 700px)').matches) {
-      el.innerHTML = `${dayStr}<br>${timeStr}`;
-    } else {
-      el.textContent = `${dayStr} ${timeStr}`;
-    }
-  }
-  updateTime();
-  setInterval(updateTime, 1000);
-  </script>
-  <footer>
-    <div class="footer-left">
-      <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
-      <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
+  <footer class="app-footer">
+    <div class="footer-brand">
+      <img src="/static/logo.svg" alt="">
+      <span>PiBells</span>
     </div>
-    <div class="theme-switch">
-      <button class="theme-btn" data-theme="light" title="Light"><i class="fa-solid fa-sun"></i></button>
-      <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
-      <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
-    </div>
-    <div id="hostname" class="footer-right"></div>
+    <div id="hostname"></div>
   </footer>
-  <script>
-  async function loadHostname() {
-    try {
-      const res = await fetch('/api/network');
-      const data = await res.json();
-      document.getElementById('hostname').textContent = `${data.hostname} - ${data.ip}`;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-  loadHostname();
-  </script>
-  <script src="/static/theme.js"></script>
+  <dialog id="scan-dialog" class="modal-dialog">
+    <section class="modal-panel">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow">Network discovery</p>
+          <h2>Barix Devices</h2>
+        </div>
+        <button id="scan-close" class="icon-btn" type="button" title="Close"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+      </div>
+      <label>
+        <span>Scan ranges</span>
+        <input id="scan-ranges" type="text" placeholder="10.80.2.0/24, 10.80.3.0/24, 10.80.4.0/24, 10.80.5.0/24" autocomplete="off">
+      </label>
+      <div class="action-strip">
+        <button id="scan-start" class="btn" type="button"><i class="fa-solid fa-magnifying-glass-location" aria-hidden="true"></i><span>Scan Network</span></button>
+        <button id="scan-stop" class="btn secondary" type="button" hidden><i class="fa-solid fa-stop" aria-hidden="true"></i><span>Stop</span></button>
+      </div>
+      <div class="progress-row">
+        <progress id="scan-progress" value="0" max="100" hidden></progress>
+        <span id="scan-status"></span>
+      </div>
+      <div id="scan-results" class="scan-results"></div>
+      <div class="modal-actions">
+        <button id="scan-add-selected" class="btn" type="button" disabled><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add Selected</span></button>
+        <button id="scan-cancel" class="btn secondary" type="button">Close</button>
+      </div>
+    </section>
+  </dialog>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <script type="module" src="/static/admin.js"></script>
 </body>
 </html>

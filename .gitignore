@@ -1,2 +1,11 @@
 .DS_Store
 .DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+pibells-auth.json
+audio.json
+buttons.json
+barix-scan-ranges.json
+*.tmp

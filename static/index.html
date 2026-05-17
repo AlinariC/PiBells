@@ -1,288 +1,129 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-  <meta name="theme-color" content="#4facfe">
+  <link rel="icon" href="/static/favicons/favicon.ico" sizes="any">
+  <link rel="icon" href="/static/favicons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicons/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicons/apple-touch-icon.png">
+  <link rel="mask-icon" href="/static/favicons/safari-pinned-tab.svg" color="#0f766e">
   <title>PiBells Schedule</title>
-  <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/css/all.min.css">
+  <link rel="stylesheet" href="/static/style.css?asset=schedule-modal">
 </head>
-<body>
-  <header>
-    <a href="/">
-      <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
+<body data-page="schedule">
+  <header class="app-header">
+    <a href="/" class="brand" aria-label="PiBells home">
+      <img src="/static/logo.svg" alt="PiBells logo">
+      <span>PiBells</span>
     </a>
-    <div id="current-time"></div>
-    <button id="menu-toggle" class="hamburger"><i class="fa-solid fa-bars"></i></button>
-    <nav>
-      <a href="/admin"><span class="icon"><i class="fa-solid fa-gear"></i></span> Settings</a>
-      <a href="/buttons"><span class="icon"><i class="fa-solid fa-bell"></i></span> Buttons</a>
-      <a href="/logout"><span class="icon"><i class="fa-solid fa-right-from-bracket"></i></span> Logout</a>
+    <div id="current-time" class="clock"></div>
+    <button id="menu-toggle" class="icon-btn nav-toggle" type="button" title="Menu" aria-expanded="false">
+      <i class="fa-solid fa-bars" aria-hidden="true"></i>
+    </button>
+    <nav class="app-nav" aria-label="Primary">
+      <a href="/" data-nav="schedule"><i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span>Schedule</span></a>
+      <a href="/buttons" data-nav="buttons"><i class="fa-solid fa-bell" aria-hidden="true"></i><span>Buttons</span></a>
+      <a href="/admin" data-nav="admin"><i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span></a>
     </nav>
+    <div class="header-actions">
+      <div class="theme-switch" aria-label="Theme">
+        <button class="theme-btn" data-theme="light" type="button" title="Light"><i class="fa-solid fa-sun" aria-hidden="true"></i></button>
+        <button class="theme-btn" data-theme="auto" type="button" title="Auto"><i class="fa-solid fa-circle-half-stroke" aria-hidden="true"></i></button>
+        <button class="theme-btn" data-theme="dark" type="button" title="Dark"><i class="fa-solid fa-moon" aria-hidden="true"></i></button>
+      </div>
+      <a class="icon-btn" href="/logout" title="Logout"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></a>
+    </div>
   </header>
-  <div id="quick-buttons"></div>
-  <h1>Bell Schedule</h1>
-  <div>
-    <label>Active schedule:
-      <select id="schedule-select"></select>
-    </label>
-    <button id="set-schedule" class="btn"><span class="icon"><i class="fa-solid fa-check"></i></span> Set Schedule</button>
-    <input type="text" id="new-schedule" placeholder="New schedule">
-    <button id="add-schedule" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
-    <button id="delete-schedule" class="btn btn-danger"><span class="icon"><i class="fa-solid fa-trash"></i></span> Delete</button>
-  </div>
-  <div id="schedule-grid" class="schedule-grid"></div>
-  <script>
-let audioFiles = [];
-let audioMap = {};
-const durations = {};
 
-function formatTime12h(str) {
-  const parts = str.split(':');
-  let hour = parseInt(parts[0], 10);
-  const minute = parts[1] || '00';
-  const ampm = hour >= 12 ? 'PM' : 'AM';
-  hour = hour % 12;
-  if (hour === 0) hour = 12;
-  return `${hour.toString().padStart(2, '0')}:${minute} ${ampm}`;
-}
+  <main class="app-main">
+    <section class="page-heading">
+      <div>
+        <p class="eyebrow">Active schedule: <span id="active-schedule-name">Default</span></p>
+        <h1>Schedule Console</h1>
+      </div>
+      <div class="page-actions schedule-tools">
+        <select id="schedule-select" aria-label="Schedule"></select>
+        <button id="set-schedule" class="btn secondary" type="button"><i class="fa-solid fa-check" aria-hidden="true"></i><span>Activate</span></button>
+        <input id="new-schedule" type="text" placeholder="New schedule" autocomplete="off">
+        <button id="add-schedule" class="btn" type="button"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add</span></button>
+        <button id="delete-schedule" class="icon-btn danger" type="button" title="Delete schedule"><i class="fa-solid fa-trash" aria-hidden="true"></i></button>
+      </div>
+    </section>
 
-async function loadButtons() {
-  const res = await fetch('/api/buttons');
-  const data = await res.json();
-  const container = document.getElementById('quick-buttons');
-  container.innerHTML = '';
-  const iconMap = {
-    'fa-bell': '<i class="fa-solid fa-bell"></i>',
-    'fa-fire': '<i class="fa-solid fa-fire"></i>',
-    'fa-exclamation-triangle': '<i class="fa-solid fa-triangle-exclamation"></i>',
-    'fa-ambulance': '<i class="fa-solid fa-truck-medical"></i>',
-    'fa-bullhorn': '<i class="fa-solid fa-bullhorn"></i>',
-    'fa-volume-high': '<i class="fa-solid fa-volume-high"></i>',
-    'fa-school': '<i class="fa-solid fa-school"></i>',
-    'fa-music': '<i class="fa-solid fa-music"></i>'
-  };
-  let playing = null;
-  data.forEach(btn => {
-    const b = document.createElement('button');
-    const icon = iconMap[btn.icon] || btn.icon || '';
-    if (icon) {
-      b.innerHTML = `<span class="icon">${icon}</span> ${btn.name}`;
-    } else {
-      b.textContent = btn.name;
-    }
-    b.style.background = btn.color;
-    b.dataset.original = b.innerHTML;
-    b.onclick = async () => {
-      if (btn.loop) {
-        if (playing === b) {
-          await fetch('/api/stop', { method: 'POST' });
-          b.innerHTML = b.dataset.original;
-          playing = null;
-          return;
-        }
-        if (playing) {
-          await fetch('/api/stop', { method: 'POST' });
-          playing.innerHTML = playing.dataset.original;
-        }
-        b.innerHTML = `<span class="icon"><i class="fa-solid fa-stop"></i></span> ${btn.name}`;
-        playing = b;
-        await fetch('/api/test', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sound_file: btn.sound_file, loop: true })
-        });
-      } else {
-        b.innerHTML = `<span class="icon"><i class="fa-solid fa-stop"></i></span> ${btn.name}`;
-        b.disabled = true;
-        try {
-          await fetch('/api/test', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sound_file: btn.sound_file })
-          });
-          const d = Math.max((durations[btn.sound_file] || 1) * 1000, 500);
-          setTimeout(() => {
-            b.innerHTML = b.dataset.original;
-            b.disabled = false;
-          }, d);
-        } catch (e) {
-          b.innerHTML = b.dataset.original;
-          b.disabled = false;
-        }
-      }
-    };
-    container.appendChild(b);
-  });
-}
-async function loadSchedule() {
-  const res = await fetch('/api/schedule');
-  const data = await res.json();
-  const grid = document.getElementById('schedule-grid');
-  grid.innerHTML = '';
-  const days = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
-  for (let d=0; d<5; d++) {
-    const div = document.createElement('div');
-    div.className = 'schedule-day';
-    const h = document.createElement('h3');
-    h.textContent = days[d];
-    div.appendChild(h);
-    const ul = document.createElement('ul');
-    data.map((e,i)=>({...e, index:i}))
-        .filter(e=>e.day===d)
-        .sort((a,b)=>a.time.localeCompare(b.time))
-        .forEach(ev => {
-          const li = document.createElement('li');
-          const display = audioMap[ev.sound_file] || ev.sound_file;
-          const timeDisp = formatTime12h(ev.time);
-          li.textContent = `${timeDisp} - ${display}`;
-          const btn = document.createElement('button');
-          btn.className = 'icon-btn danger';
-          btn.title = 'Remove';
-          btn.innerHTML = '<i class="fa-solid fa-trash"></i>';
-          btn.onclick = async () => {
-            await fetch('/api/schedule/' + ev.index, { method: 'DELETE' });
-            loadSchedule();
-          };
-          li.appendChild(btn);
-          ul.appendChild(li);
-        });
-    div.appendChild(ul);
-    const form = document.createElement('form');
-    form.className = 'add-event-form';
-    const t = document.createElement('input');
-    t.type = 'time';
-    t.required = true;
-    const sel = document.createElement('select');
-    audioFiles.forEach(file => {
-      const opt = document.createElement('option');
-      opt.value = file.file;
-      opt.textContent = file.name;
-      sel.appendChild(opt);
-    });
-    const addBtn = document.createElement('button');
-    addBtn.type = 'submit';
-    addBtn.className = 'btn';
-    addBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-plus"></i></span> Add';
-    form.appendChild(t);
-    form.appendChild(sel);
-    form.appendChild(addBtn);
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      const val = t.value;
-      if (!val) {
-        alert('Please select a time');
-        return;
-      }
-      await fetch('/api/schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ day: d, time: val, sound_file: sel.value })
-      });
-      loadSchedule();
-    };
-    div.appendChild(form);
-    grid.appendChild(div);
-  }
-}
-async function loadScheduleList() {
-  const res = await fetch('/api/schedules');
-  const data = await res.json();
-  const select = document.getElementById('schedule-select');
-  select.innerHTML = '';
-  data.schedules.forEach(name => {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    if (name === data.active) opt.selected = true;
-    select.appendChild(opt);
-  });
-}
-async function loadAudio() {
-  const res = await fetch('/api/audio');
-  audioFiles = await res.json();
-  audioMap = {};
-  audioFiles.forEach(f => {
-    audioMap[f.file] = f.name;
-    const a = new Audio('/audio/' + encodeURIComponent(f.file));
-    a.preload = 'metadata';
-    a.onloadedmetadata = () => { durations[f.file] = a.duration; };
-  });
-}
-document.getElementById('set-schedule').onclick = async () => {
-  const name = document.getElementById('schedule-select').value;
-  await fetch('/api/schedules/activate/' + encodeURIComponent(name), { method: 'POST' });
-  loadSchedule();
-};
-document.getElementById('add-schedule').onclick = async () => {
-  const name = document.getElementById('new-schedule').value.trim();
-  if (!name) return;
-  await fetch('/api/schedules', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name })
-  });
-  document.getElementById('new-schedule').value = '';
-  loadScheduleList();
-  loadSchedule();
-};
-document.getElementById('delete-schedule').onclick = async () => {
-  const name = document.getElementById('schedule-select').value;
-  if (!name) return;
-  await fetch('/api/schedules/' + encodeURIComponent(name), { method: 'DELETE' });
-  loadScheduleList();
-  loadSchedule();
-};
-loadScheduleList();
-loadAudio().then(loadSchedule);
-loadButtons();
-function updateTime() {
-  const now = new Date();
-  const pad = n => n.toString().padStart(2, '0');
-  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  let hours = now.getHours();
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-  const dayStr = days[now.getDay()];
-  const timeStr = `${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
-  const el = document.getElementById('current-time');
-  if (window.matchMedia('(max-width: 700px)').matches) {
-    el.innerHTML = `${dayStr}<br>${timeStr}`;
-  } else {
-    el.textContent = `${dayStr} ${timeStr}`;
-  }
-}
-updateTime();
-  setInterval(updateTime, 1000);
-  </script>
-  <footer>
-    <div class="footer-left">
-      <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
-      <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
+    <section id="dashboard-metrics" class="metrics" aria-label="Schedule summary"></section>
+
+    <section class="section-band">
+      <div class="section-heading">
+        <h2>Quick Play</h2>
+        <a class="text-link" href="/buttons">Manage</a>
+      </div>
+      <div id="quick-buttons" class="quick-grid"></div>
+    </section>
+
+    <section class="workspace-grid schedule-layout">
+      <section class="panel schedule-panel">
+        <div class="panel-heading">
+          <h2>Week</h2>
+        </div>
+        <div id="schedule-board" class="schedule-board"></div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <div class="footer-brand">
+      <img src="/static/logo.svg" alt="">
+      <span>PiBells</span>
     </div>
-    <div class="theme-switch">
-      <button class="theme-btn" data-theme="light" title="Light"><i class="fa-solid fa-sun"></i></button>
-      <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
-      <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
-    </div>
-    <div id="hostname" class="footer-right"></div>
+    <div id="hostname"></div>
   </footer>
-  <script>
-  async function loadHostname() {
-    try {
-      const res = await fetch('/api/network');
-      const data = await res.json();
-      document.getElementById('hostname').textContent = `${data.hostname} - ${data.ip}`;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-  loadHostname();
-  </script>
-  <script src="/static/theme.js"></script>
+
+  <dialog id="entry-dialog" class="modal-dialog">
+    <section class="modal-panel">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow">Schedule entry</p>
+          <h2 id="entry-form-title">Add Bell</h2>
+        </div>
+        <button id="entry-close" class="icon-btn" type="button" title="Close"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+      </div>
+      <form id="entry-form" class="control-panel">
+        <div class="panel-heading">
+          <h2>Bell Details</h2>
+        </div>
+        <label>
+          <span>Day</span>
+          <select id="entry-day" required></select>
+        </label>
+        <label>
+          <span>Time</span>
+          <input id="entry-time" type="time" required>
+        </label>
+        <label>
+          <span>Sound</span>
+          <select id="entry-sound" required></select>
+        </label>
+        <label>
+          <span>Label</span>
+          <input id="entry-label" type="text" placeholder="Passing bell" autocomplete="off">
+        </label>
+        <label class="check-row">
+          <input id="entry-enabled" type="checkbox" checked>
+          <span>Enabled</span>
+        </label>
+        <div class="button-row">
+          <button id="entry-submit" class="btn" type="submit"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add Bell</span></button>
+          <button id="entry-cancel" class="btn secondary" type="button">Cancel</button>
+        </div>
+      </form>
+    </section>
+  </dialog>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <script type="module" src="/static/schedule.js?asset=schedule-modal"></script>
 </body>
 </html>

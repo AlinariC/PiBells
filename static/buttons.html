@@ -1,197 +1,104 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-  <meta name="theme-color" content="#4facfe">
-  <title>Button Configuration</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/favicons/favicon.ico" sizes="any">
+  <link rel="icon" href="/static/favicons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicons/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicons/apple-touch-icon.png">
+  <link rel="mask-icon" href="/static/favicons/safari-pinned-tab.svg" color="#0f766e">
+  <title>PiBells Buttons</title>
   <link rel="stylesheet" href="/static/css/all.min.css">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-  <header>
-    <a href="/">
-      <img src="/static/pibells-logo.png" alt="PiBells logo" class="logo" />
+<body data-page="buttons">
+  <header class="app-header">
+    <a href="/" class="brand" aria-label="PiBells home">
+      <img src="/static/logo.svg" alt="PiBells logo">
+      <span>PiBells</span>
     </a>
-    <div id="current-time"></div>
-    <button id="menu-toggle" class="hamburger"><i class="fa-solid fa-bars"></i></button>
-    <nav>
-      <a href="/"><span class="icon"><i class="fa-solid fa-arrow-left"></i></span> Back to Schedule</a>
-      <a href="/logout"><span class="icon"><i class="fa-solid fa-right-from-bracket"></i></span> Logout</a>
+    <div id="current-time" class="clock"></div>
+    <button id="menu-toggle" class="icon-btn nav-toggle" type="button" title="Menu" aria-expanded="false">
+      <i class="fa-solid fa-bars" aria-hidden="true"></i>
+    </button>
+    <nav class="app-nav" aria-label="Primary">
+      <a href="/" data-nav="schedule"><i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span>Schedule</span></a>
+      <a href="/buttons" data-nav="buttons"><i class="fa-solid fa-bell" aria-hidden="true"></i><span>Buttons</span></a>
+      <a href="/admin" data-nav="admin"><i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span></a>
     </nav>
+    <div class="header-actions">
+      <div class="theme-switch" aria-label="Theme">
+        <button class="theme-btn" data-theme="light" type="button" title="Light"><i class="fa-solid fa-sun" aria-hidden="true"></i></button>
+        <button class="theme-btn" data-theme="auto" type="button" title="Auto"><i class="fa-solid fa-circle-half-stroke" aria-hidden="true"></i></button>
+        <button class="theme-btn" data-theme="dark" type="button" title="Dark"><i class="fa-solid fa-moon" aria-hidden="true"></i></button>
+      </div>
+      <a class="icon-btn" href="/logout" title="Logout"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></a>
+    </div>
   </header>
-  <h1>Quick Buttons</h1>
-  <form id="add-form" class="inline-form">
-    <label>Name: <input type="text" id="name" required></label>
-    <label>Sound: <select id="sound"></select></label>
-    <label>Color: <input type="color" id="color" value="#ff0000"></label>
-    <label>Icon:
-      <select id="icon">
-        <option value="">None</option>
-        <option value="fa-bell">Bell</option>
-        <option value="fa-fire">Fire</option>
-        <option value="fa-exclamation-triangle">Warning</option>
-        <option value="fa-ambulance">Ambulance</option>
-        <option value="fa-bullhorn">Bullhorn</option>
-        <option value="fa-volume-high">Volume</option>
-        <option value="fa-school">School</option>
-        <option value="fa-music">Music</option>
-      </select>
-      <span id="icon-preview" class="icon"></span>
-    </label>
-    <label><input type="checkbox" id="loop"> Loop until stopped</label>
-    <button type="submit" class="btn"><span class="icon"><i class="fa-solid fa-plus"></i></span> Add</button>
-  </form>
-  <div id="buttons" class="button-grid"></div>
-<script>
-let audioMap = {};
-async function loadAudio() {
-  const res = await fetch('/api/audio');
-  const data = await res.json();
-  const select = document.getElementById('sound');
-  if (!select) return;
-  select.innerHTML = '';
-  audioMap = {};
-  data.forEach(file => {
-    const opt = document.createElement('option');
-    opt.value = file.file;
-    opt.textContent = file.name;
-    select.appendChild(opt);
-    audioMap[file.file] = file.name;
-  });
-}
 
-async function loadButtons() {
-  const res = await fetch('/api/buttons');
-  const data = await res.json();
-  const container = document.getElementById('buttons');
-  container.innerHTML = '';
-  const iconMap = {
-    'fa-bell': 'fa-bell',
-    'fa-fire': 'fa-fire',
-    'fa-exclamation-triangle': 'fa-triangle-exclamation',
-    'fa-ambulance': 'fa-truck-medical',
-    'fa-bullhorn': 'fa-bullhorn',
-    'fa-volume-high': 'fa-volume-high',
-    'fa-school': 'fa-school',
-    'fa-music': 'fa-music'
-  };
-  data.forEach((btn, i) => {
-    const item = document.createElement('div');
-    item.className = 'button-item';
+  <main class="app-main">
+    <section class="page-heading">
+      <div>
+        <p class="eyebrow">Instant bell controls</p>
+        <h1>Quick Button Studio</h1>
+      </div>
+    </section>
 
-    const nameDiv = document.createElement('div');
-    nameDiv.className = 'audio-name';
-    if (btn.icon) {
-      const icon = document.createElement('i');
-      const cls = iconMap[btn.icon] || btn.icon;
-      icon.className = 'fa-solid ' + cls + ' audio-icon';
-      nameDiv.appendChild(icon);
-    }
-    nameDiv.appendChild(document.createTextNode(btn.name));
-    item.appendChild(nameDiv);
+    <section class="workspace-grid buttons-layout">
+      <form id="button-form" class="panel control-panel">
+        <div class="panel-heading">
+          <h2 id="button-form-title">Add Button</h2>
+        </div>
+        <label>
+          <span>Name</span>
+          <input id="button-name" type="text" placeholder="Assembly bell" required autocomplete="off">
+        </label>
+        <label>
+          <span>Sound</span>
+          <select id="button-sound" required></select>
+        </label>
+        <label>
+          <span>Color</span>
+          <input id="button-color" type="color" value="#0f766e">
+        </label>
+        <label>
+          <span>Icon</span>
+          <div class="icon-select-row">
+            <select id="button-icon"></select>
+            <span id="icon-preview" class="icon-preview"></span>
+          </div>
+        </label>
+        <label class="check-row">
+          <input id="button-loop" type="checkbox">
+          <span>Loop until stopped</span>
+        </label>
+        <div class="button-row">
+          <button id="button-submit" class="btn" type="submit"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add Button</span></button>
+          <button id="button-cancel" class="btn ghost" type="button" hidden>Cancel</button>
+        </div>
+      </form>
 
-    const info = document.createElement('div');
-    info.className = 'button-info';
-    const sound = audioMap[btn.sound_file] || btn.sound_file;
-    if (btn.loop) {
-      info.innerHTML = `${sound} <i class="fa-solid fa-repeat" title="Loops"></i>`;
-    } else {
-      info.textContent = sound;
-    }
-    item.appendChild(info);
+      <section class="panel button-panel">
+        <div class="panel-heading">
+          <h2>Buttons</h2>
+        </div>
+        <div id="buttons" class="button-list"></div>
+      </section>
+    </section>
+  </main>
 
-    const colorBox = document.createElement('div');
-    colorBox.className = 'color-box';
-    colorBox.style.background = btn.color;
-    item.appendChild(colorBox);
-
-    const actions = document.createElement('div');
-    actions.className = 'audio-actions';
-    const del = document.createElement('button');
-    del.className = 'btn btn-danger';
-    del.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span> Delete';
-    del.onclick = async () => {
-      await fetch('/api/buttons/' + i, { method: 'DELETE' });
-      loadButtons();
-    };
-    actions.appendChild(del);
-    item.appendChild(actions);
-
-    container.appendChild(item);
-  });
-}
-
-document.getElementById('add-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const name = document.getElementById('name').value;
-  const sound = document.getElementById('sound').value;
-  const color = document.getElementById('color').value;
-  const icon = document.getElementById('icon').value;
-  const loop = document.getElementById('loop').checked;
-  await fetch('/api/buttons', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, sound_file: sound, color, icon, loop })
-  });
-  e.target.reset();
-  loadButtons();
-};
-
-  loadAudio().then(loadButtons);
-  function updateIconPreview() {
-    const val = document.getElementById('icon').value;
-    const preview = document.getElementById('icon-preview');
-    preview.innerHTML = val ? `<i class="fa-solid ${val}"></i>` : '';
-  }
-  document.getElementById('icon').addEventListener('change', updateIconPreview);
-  updateIconPreview();
-  function updateTime() {
-    const now = new Date();
-    const pad = n => n.toString().padStart(2, '0');
-    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    let hours = now.getHours();
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12;
-    if (hours === 0) hours = 12;
-    const dayStr = days[now.getDay()];
-    const timeStr = `${pad(hours)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
-    const el = document.getElementById('current-time');
-    if (window.matchMedia('(max-width: 700px)').matches) {
-      el.innerHTML = `${dayStr}<br>${timeStr}`;
-    } else {
-      el.textContent = `${dayStr} ${timeStr}`;
-    }
-  }
-  updateTime();
-  setInterval(updateTime, 1000);
-</script>
-  <footer>
-    <div class="footer-left">
-      <img src="/static/smallroundlogo.png" alt="PixelPacific logo" class="footer-logo" />
-      <span>&copy; 2025 <a href="https://www.pixelpacific.com" target="_blank">PixelPacific LLC.</a></span>
+  <footer class="app-footer">
+    <div class="footer-brand">
+      <img src="/static/logo.svg" alt="">
+      <span>PiBells</span>
     </div>
-    <div class="theme-switch">
-      <button class="theme-btn" data-theme="light" title="Light"><i class="fa-solid fa-sun"></i></button>
-      <button class="theme-btn" data-theme="auto" title="Auto"><i class="fa-solid fa-circle-half-stroke"></i></button>
-      <button class="theme-btn" data-theme="dark" title="Dark"><i class="fa-solid fa-moon"></i></button>
-    </div>
-    <div id="hostname" class="footer-right"></div>
+    <div id="hostname"></div>
   </footer>
-  <script>
-  async function loadHostname() {
-    try {
-      const res = await fetch('/api/network');
-      const data = await res.json();
-      document.getElementById('hostname').textContent = `${data.hostname} - ${data.ip}`;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-  loadHostname();
-  </script>
-  <script src="/static/theme.js"></script>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <script type="module" src="/static/buttons.js"></script>
 </body>
 </html>
