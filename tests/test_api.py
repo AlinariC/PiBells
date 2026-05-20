@@ -15,6 +15,7 @@ def load_app(tmp_path, monkeypatch):
     (tmp_path / "static").mkdir()
     monkeypatch.setenv("PIBELLS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("PIBELLS_DISABLE_DAEMON", "1")
+    monkeypatch.setenv("PIBELLS_DISABLE_THREADHALL_SYNC", "1")
     sys.modules.pop("app.main", None)
     module = importlib.import_module("app.main")
     return module
@@ -111,6 +112,110 @@ def test_scan_ranges_can_be_saved(authed_client):
 
     assert response.status_code == 200
     assert response.json()["ranges"] == ["10.80.2.0/24", "10.80.3.12/32"]
+
+
+def test_threadhall_pairing_saves_device_token(module, authed_client, monkeypatch):
+    def fake_threadhall_request(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/pair"
+        assert payload["pairing_code"] == "ABCD-EFGH"
+        return {
+            "data": {
+                "token": "pb_test_token",
+                "poll_seconds": 15,
+                "device": {"status": "online"},
+            }
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_threadhall_request)
+    monkeypatch.setattr(module, "dashboard", lambda: {"active_schedule": "Default"})
+
+    response = authed_client.post(
+        "/api/threadhall/pair",
+        json={
+            "base_url": "https://threadhall.example.test",
+            "pairing_code": "ABCD-EFGH",
+            "name": "High School PiBells",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["paired"] is True
+    assert module.load_threadhall_config()["token"] == "pb_test_token"
+
+
+def test_threadhall_sync_applies_schedules_and_commands(module, monkeypatch):
+    (module.AUDIO_DIR / "bell-passing-classic.mp3").write_bytes(b"fake mp3")
+    module.save_threadhall_config({
+        "enabled": True,
+        "base_url": "https://threadhall.example.test",
+        "token": "pb_test_token",
+        "device_uuid": "local-box",
+    })
+    played = []
+    acknowledgements = []
+
+    def fake_trigger(sound_file, loop=False):
+        played.append((sound_file, loop))
+
+    def fake_threadhall_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "data": {
+                    "poll_seconds": 15,
+                    "schedules": [
+                        {
+                            "name": "Threadhall - High School",
+                            "active": True,
+                            "entries": [
+                                {
+                                    "id": "bell-1",
+                                    "day": 0,
+                                    "time": "08:10",
+                                    "sound_key": "passing",
+                                    "label": "Period 1",
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "commands": [
+                        {
+                            "id": 7,
+                            "type": "test_bell",
+                            "payload": {"sound_key": "passing", "label": "Test Bell"},
+                        }
+                    ],
+                }
+            }
+        if path == "api/pibells/v1/commands/7/ack":
+            acknowledgements.append(payload)
+            return {"data": {"status": "acknowledged"}}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(module, "trigger_bell", fake_trigger)
+    monkeypatch.setattr(module, "threadhall_request", fake_threadhall_request)
+
+    status = module.sync_threadhall_once()
+
+    assert status["received_commands"] == 1
+    assert module.load_all_schedules()["active"] == "Threadhall - High School"
+    assert module.load_schedule()[0].label == "Period 1"
+    assert played == [("bell-passing-classic.mp3", False)]
+    assert acknowledgements[0]["status"] == "acknowledged"
+
+
+def test_default_audio_names_are_applied(module):
+    (module.AUDIO_DIR / "emergency-lockdown.mp3").write_bytes(b"fake mp3")
+    (module.AUDIO_DIR / "bell-lunch-light-chime.mp3").write_bytes(b"fake mp3")
+
+    audio = {item.file: item.name for item in module.list_audio()}
+    default_keys = {item.file: item.default_key for item in module.list_audio()}
+
+    assert audio["emergency-lockdown.mp3"] == "Emergency Lockdown"
+    assert audio["bell-lunch-light-chime.mp3"] == "Lunch Light Chime"
+    assert default_keys["emergency-lockdown.mp3"] == "lockdown"
+    assert default_keys["bell-lunch-light-chime.mp3"] == "lunch"
+    assert module.audio_file_for_key("lockdown") == "emergency-lockdown.mp3"
 
 
 def test_version_and_update_endpoints_are_removed(authed_client):

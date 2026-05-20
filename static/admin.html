@@ -51,6 +51,36 @@
     <section class="workspace-grid settings-grid">
       <section class="panel">
         <div class="panel-heading">
+          <h2>Threadhall Integration</h2>
+          <span id="threadhall-state" class="subtle-pill">Not paired</span>
+        </div>
+        <form id="threadhall-form" class="stack-form">
+          <label>
+            <span>Threadhall URL</span>
+            <input id="threadhall-url" type="url" placeholder="https://your-threadhall-site.org" autocomplete="off" required>
+          </label>
+          <label>
+            <span>Pairing code</span>
+            <input id="threadhall-code" type="text" placeholder="ABCD-EFGH" autocomplete="off" required>
+          </label>
+          <label>
+            <span>Controller name</span>
+            <input id="threadhall-name" type="text" placeholder="High School PiBells" autocomplete="off">
+          </label>
+          <div class="action-strip">
+            <button id="threadhall-pair-submit" class="btn" type="submit"><i class="fa-solid fa-link" aria-hidden="true"></i><span>Pair</span></button>
+            <button id="threadhall-sync-btn" class="btn secondary" type="button"><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>Sync Now</span></button>
+            <button id="threadhall-unpair-btn" class="btn danger-btn" type="button"><i class="fa-solid fa-link-slash" aria-hidden="true"></i><span>Unpair</span></button>
+          </div>
+        </form>
+        <div id="threadhall-details" class="empty-state compact">
+          <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+          <span>Pair this controller from Threadhall workspace settings.</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
           <h2>Barix Devices</h2>
           <button id="scan-btn" class="btn secondary" type="button"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><span>Scan</span></button>
         </div>
@@ -77,7 +107,10 @@
 
       <section class="panel">
         <div class="panel-heading">
-          <h2>Audio Library</h2>
+          <div>
+            <h2>Audio Library</h2>
+            <p class="panel-copy">PiBells includes default routine bell and emergency samples. Upload district-approved replacements any time.</p>
+          </div>
         </div>
         <form id="upload-form" class="upload-form">
           <label class="file-field">

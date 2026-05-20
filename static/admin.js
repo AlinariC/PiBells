@@ -12,6 +12,7 @@ import {
 let audioFiles = [];
 let scanEvents = null;
 let scanResults = new Map();
+let threadhallStatus = null;
 
 function deviceKey(device) {
   return `${device.ip}:${device.port || 3030}`;
@@ -91,10 +92,13 @@ async function loadAudio() {
   audioFiles.forEach((file) => {
     const item = document.createElement("article");
     item.className = "media-item";
+    const sampleBadge = file.default_key
+      ? `<span class="media-badge">${escapeHtml(file.default_category || "Default")} · ${escapeHtml(file.default_key)}</span>`
+      : "";
     item.innerHTML = `
       <div class="media-icon">${icon("fa-music")}</div>
       <div class="media-main">
-        <strong>${escapeHtml(file.name)}</strong>
+        <strong>${escapeHtml(file.name)}${sampleBadge}</strong>
         <span>${escapeHtml(file.file)}</span>
       </div>
       <div class="media-actions">
@@ -158,6 +162,96 @@ async function loadAccount() {
   } catch {
     qs("#account-name").textContent = "Admin";
   }
+}
+
+function renderThreadhallStatus() {
+  const state = qs("#threadhall-state");
+  const details = qs("#threadhall-details");
+  if (!state || !details) return;
+  const paired = Boolean(threadhallStatus?.paired);
+  const enabled = Boolean(threadhallStatus?.enabled);
+  state.textContent = paired ? (enabled ? "Paired" : "Paused") : "Not paired";
+  state.className = `subtle-pill ${paired ? "online" : ""}`;
+  qs("#threadhall-url").value = threadhallStatus?.base_url || qs("#threadhall-url").value;
+  qs("#threadhall-name").value = threadhallStatus?.device_name || qs("#threadhall-name").value;
+  if (!paired) {
+    details.innerHTML = `${icon("fa-cloud-arrow-down")}<span>Pair this controller from Threadhall workspace settings.</span>`;
+    return;
+  }
+  const lastSync = threadhallStatus.last_sync_at ? new Date(threadhallStatus.last_sync_at).toLocaleString() : "Not synced yet";
+  const error = threadhallStatus.last_error ? `<small class="danger-text">${escapeHtml(threadhallStatus.last_error)}</small>` : "";
+  details.innerHTML = `
+    <div class="settings-summary">
+      <strong>${escapeHtml(threadhallStatus.device_name || "PiBells Controller")}</strong>
+      <span>${escapeHtml(threadhallStatus.base_url || "")}</span>
+      <small>Device ${escapeHtml(threadhallStatus.device_uuid || "unknown")} · Polls every ${escapeHtml(threadhallStatus.poll_seconds || 20)}s</small>
+      <small>Last sync: ${escapeHtml(lastSync)}</small>
+      ${error}
+    </div>
+  `;
+}
+
+async function loadThreadhallStatus() {
+  try {
+    threadhallStatus = await api("/api/threadhall/status");
+    renderThreadhallStatus();
+  } catch (error) {
+    threadhallStatus = { paired: false, last_error: error.message };
+    renderThreadhallStatus();
+  }
+}
+
+function initThreadhallForm() {
+  const form = qs("#threadhall-form");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = qs("#threadhall-pair-submit");
+    setButtonBusy(submit, true, "Pairing");
+    try {
+      threadhallStatus = await api("/api/threadhall/pair", {
+        method: "POST",
+        body: {
+          base_url: qs("#threadhall-url").value.trim(),
+          pairing_code: qs("#threadhall-code").value.trim(),
+          name: qs("#threadhall-name").value.trim()
+        }
+      });
+      qs("#threadhall-code").value = "";
+      renderThreadhallStatus();
+      notify("Threadhall paired", "success");
+    } catch (error) {
+      notify(error.message, "error");
+    } finally {
+      setButtonBusy(submit, false);
+    }
+  });
+
+  qs("#threadhall-sync-btn").addEventListener("click", async () => {
+    const button = qs("#threadhall-sync-btn");
+    setButtonBusy(button, true, "Syncing");
+    try {
+      threadhallStatus = await api("/api/threadhall/sync-now", { method: "POST" });
+      renderThreadhallStatus();
+      await Promise.all([loadDevices(), loadAudio()]);
+      notify("Threadhall sync complete", "success");
+    } catch (error) {
+      notify(error.message, "error");
+    } finally {
+      setButtonBusy(button, false);
+    }
+  });
+
+  qs("#threadhall-unpair-btn").addEventListener("click", async () => {
+    if (!confirm("Unpair this PiBells controller from Threadhall?")) return;
+    try {
+      threadhallStatus = await api("/api/threadhall/unpair", { method: "POST" });
+      renderThreadhallStatus();
+      notify("Threadhall unpaired", "success");
+    } catch (error) {
+      notify(error.message, "error");
+    }
+  });
 }
 
 function initDeviceForms() {
@@ -403,12 +497,13 @@ function initAccountForm() {
 
 async function init() {
   initShell("admin");
+  initThreadhallForm();
   initDeviceForms();
   initScanDialog();
   initAudioForm();
   initPowerActions();
   initAccountForm();
-  await Promise.all([loadDevices(), loadAudio(), loadAccount()]);
+  await Promise.all([loadDevices(), loadAudio(), loadAccount(), loadThreadhallStatus()]);
   window.setInterval(updateDeviceStatuses, 6000);
 }
 

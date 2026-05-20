@@ -11,6 +11,10 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -29,6 +33,7 @@ AUDIO_DIR = BASE_DIR / "audio"
 AUDIO_META_FILE = BASE_DIR / "audio.json"
 AUTH_FILE = BASE_DIR / "pibells-auth.json"
 BARIX_SCAN_RANGES_FILE = BASE_DIR / "barix-scan-ranges.json"
+THREADHALL_CONFIG_FILE = BASE_DIR / "threadhall-pairing.json"
 STATIC_DIR = BASE_DIR / "static"
 
 SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
@@ -40,6 +45,7 @@ BARIX_HTTP_PORT = int(os.environ.get("PIBELLS_BARIX_HTTP_PORT", "80"))
 BARIX_TCP_PORT = int(os.environ.get("PIBELLS_BARIX_TCP_PORT", "2020"))
 BARIX_SCAN_WORKERS = max(8, int(os.environ.get("PIBELLS_BARIX_SCAN_WORKERS", "96")))
 BARIX_SCAN_MAX_HOSTS = max(254, int(os.environ.get("PIBELLS_BARIX_SCAN_MAX_HOSTS", "4096")))
+THREADHALL_DEFAULT_POLL_SECONDS = max(10, int(os.environ.get("PIBELLS_THREADHALL_POLL_SECONDS", "20")))
 DAY_NAMES = [
     "Monday",
     "Tuesday",
@@ -57,6 +63,46 @@ storage_lock = threading.RLock()
 sessions: Dict[str, str] = {}
 loop_processes: List[subprocess.Popen] = []
 daemon_started = False
+threadhall_sync_started = False
+
+DEFAULT_AUDIO_KEY_FILES = {
+    "start_day": "bell-start-warm-chime.mp3",
+    "passing": "bell-passing-classic.mp3",
+    "lunch": "bell-lunch-light-chime.mp3",
+    "end_day": "bell-dismissal-deep-chime.mp3",
+    "test": "bell-test-tone.mp3",
+    "emergency": "emergency-general.mp3",
+    "hold": "emergency-hold.mp3",
+    "secure": "emergency-secure.mp3",
+    "lockdown": "emergency-lockdown.mp3",
+    "evacuate": "emergency-evacuate.mp3",
+    "shelter": "emergency-shelter.mp3",
+    "medical": "emergency-medical.mp3",
+    "all_clear": "emergency-all-clear.mp3",
+}
+
+DEFAULT_AUDIO_NAMES = {
+    "alert.wav": "Legacy Alert Tone",
+    "chimes.mp3": "Legacy Chimes",
+    "siren.mp3": "Legacy Siren",
+    "standard-bells.mp3": "Legacy Standard Bells",
+    "bell-start-warm-chime.mp3": "Day Start Warm Chime",
+    "bell-passing-classic.mp3": "Passing Bell Classic",
+    "bell-passing-soft-chime.mp3": "Passing Bell Soft Chime",
+    "bell-lunch-light-chime.mp3": "Lunch Light Chime",
+    "bell-dismissal-deep-chime.mp3": "Dismissal Deep Chime",
+    "bell-test-tone.mp3": "PiBells Test Tone",
+    "emergency-general.mp3": "Emergency General",
+    "emergency-hold.mp3": "Emergency Hold",
+    "emergency-secure.mp3": "Emergency Secure",
+    "emergency-lockdown.mp3": "Emergency Lockdown",
+    "emergency-evacuate.mp3": "Emergency Evacuate",
+    "emergency-shelter.mp3": "Emergency Shelter",
+    "emergency-medical.mp3": "Emergency Medical Response",
+    "emergency-all-clear.mp3": "Emergency All Clear",
+}
+
+EMERGENCY_SOUND_KEYS = {"emergency", "hold", "secure", "lockdown", "evacuate", "shelter", "medical", "all_clear"}
 
 
 def model_to_dict(model: BaseModel) -> Dict[str, Any]:
@@ -156,6 +202,8 @@ class QuickButton(BaseModel):
 class AudioFile(BaseModel):
     file: str
     name: str
+    default_key: Optional[str] = None
+    default_category: Optional[str] = None
 
 
 class AudioName(BaseModel):
@@ -185,6 +233,12 @@ class SetupRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str
+
+
+class ThreadhallPairRequest(BaseModel):
+    base_url: str
+    pairing_code: str
+    name: Optional[str] = None
 
 
 def entry_to_json(entry: ScheduleEntry) -> Dict[str, Any]:
@@ -524,16 +578,26 @@ def save_audio_meta(meta: Dict[str, str]) -> None:
 
 def list_audio() -> List[AudioFile]:
     meta = load_audio_meta()
+    default_keys = {filename: key for key, filename in DEFAULT_AUDIO_KEY_FILES.items()}
     files: List[AudioFile] = []
     changed = False
     for path in sorted(AUDIO_DIR.iterdir(), key=lambda item: item.name.lower()):
         if not path.is_file() or path.suffix.lower() not in SUPPORTED_AUDIO_EXTS:
             continue
-        name = meta.get(path.name, path.stem)
+        name = meta.get(path.name, DEFAULT_AUDIO_NAMES.get(path.name, path.stem))
+        default_key = default_keys.get(path.name)
+        default_category = None
+        if default_key:
+            default_category = "Emergency" if default_key in EMERGENCY_SOUND_KEYS else "Bell"
         if path.name not in meta:
             meta[path.name] = name
             changed = True
-        files.append(AudioFile(file=path.name, name=name))
+        files.append(AudioFile(
+            file=path.name,
+            name=name,
+            default_key=default_key,
+            default_category=default_category,
+        ))
     existing = {audio.file for audio in files}
     for missing in set(meta.keys()) - existing:
         meta.pop(missing, None)
@@ -548,6 +612,264 @@ def audio_display_name(filename: str) -> str:
         if audio.file == filename:
             return audio.name
     return Path(filename).stem
+
+
+def normalize_threadhall_base_url(value: str) -> str:
+    base_url = (value or "").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Enter a valid Threadhall URL")
+    return base_url
+
+
+def load_threadhall_config() -> Dict[str, Any]:
+    raw = read_json(THREADHALL_CONFIG_FILE, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    env_base_url = os.environ.get("THREADHALL_BASE_URL", "").strip()
+    env_token = os.environ.get("THREADHALL_PIBELLS_TOKEN", "").strip()
+    if env_base_url:
+        raw["base_url"] = normalize_threadhall_base_url(env_base_url)
+    if env_token:
+        raw["token"] = env_token
+        raw["enabled"] = True
+    raw.setdefault("enabled", bool(raw.get("token")))
+    raw.setdefault("device_uuid", str(uuid.uuid4()))
+    raw.setdefault("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS)
+    return raw
+
+
+def save_threadhall_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    config = {
+        **load_threadhall_config(),
+        **config,
+    }
+    config["poll_seconds"] = max(10, min(300, int(config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS)))
+    write_json(THREADHALL_CONFIG_FILE, config)
+    try:
+        THREADHALL_CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+    return config
+
+
+def safe_threadhall_status() -> Dict[str, Any]:
+    config = load_threadhall_config()
+    return {
+        "enabled": bool(config.get("enabled") and config.get("token")),
+        "paired": bool(config.get("token")),
+        "base_url": config.get("base_url", ""),
+        "device_uuid": config.get("device_uuid", ""),
+        "device_name": config.get("device_name", ""),
+        "poll_seconds": config.get("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS),
+        "last_sync_at": config.get("last_sync_at"),
+        "last_error": config.get("last_error", ""),
+    }
+
+
+def threadhall_request(
+    config: Dict[str, Any],
+    path: str,
+    *,
+    method: str = "GET",
+    payload: Optional[Dict[str, Any]] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    base_url = normalize_threadhall_base_url(str(config.get("base_url") or ""))
+    url = f"{base_url}/{path.lstrip('/')}"
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "PiBells/ThreadhallSync",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    token = token if token is not None else str(config.get("token") or "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        try:
+            parsed = json.loads(body)
+            detail = parsed.get("message") or parsed.get("detail") or body
+        except Exception:
+            detail = body or exc.reason
+        raise HTTPException(status_code=502, detail=f"Threadhall returned {exc.code}: {detail}")
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Threadhall connection failed: {exc.reason}")
+    if not body:
+        return {}
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="Threadhall returned invalid JSON")
+
+
+def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
+    config = load_threadhall_config()
+    config["base_url"] = normalize_threadhall_base_url(body.base_url)
+    device_uuid = str(config.get("device_uuid") or uuid.uuid4())
+    name = (body.name or config.get("device_name") or socket.gethostname() or "PiBells Controller").strip()
+    local_ip = get_local_ip()
+    payload = {
+        "pairing_code": body.pairing_code,
+        "device_uuid": device_uuid,
+        "name": name,
+        "local_url": f"http://{local_ip}:8000" if local_ip != "0.0.0.0" else "",
+        "version": "pibells-local",
+        "capabilities": {
+            "barix": True,
+            "local_audio": True,
+            "outbound_threadhall_sync": True,
+        },
+        "status": dashboard(),
+    }
+    response = threadhall_request(config, "api/pibells/v1/pair", method="POST", payload=payload, token="")
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    token = str(data.get("token") or "")
+    if not token:
+        raise HTTPException(status_code=502, detail="Threadhall did not return a device token")
+    save_threadhall_config({
+        "enabled": True,
+        "base_url": config["base_url"],
+        "token": token,
+        "device_uuid": device_uuid,
+        "device_name": name,
+        "poll_seconds": int(data.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
+        "paired_at": datetime.now().isoformat(timespec="seconds"),
+        "last_error": "",
+    })
+    return safe_threadhall_status()
+
+
+def audio_file_for_key(sound_key: str) -> str:
+    preferred = DEFAULT_AUDIO_KEY_FILES.get((sound_key or "").strip(), "standard-bells.mp3")
+    try:
+        return ensure_audio_exists(preferred)
+    except HTTPException:
+        audio_files = list_audio()
+        if audio_files:
+            return audio_files[0].file
+        raise
+
+
+def apply_threadhall_schedules(schedules: List[Dict[str, Any]]) -> None:
+    if not schedules:
+        return
+    current = load_all_schedules()
+    merged = {
+        name: entries
+        for name, entries in current.get("schedules", {}).items()
+        if not str(name).startswith("Threadhall")
+    }
+    active_name = current.get("active") or "Default"
+    for schedule in schedules:
+        name = normalize_schedule_name(str(schedule.get("name") or "Threadhall"))
+        entries: List[Dict[str, Any]] = []
+        for item in schedule.get("entries", []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                sound_file = item.get("sound_file") or audio_file_for_key(str(item.get("sound_key") or "passing"))
+                entry = ScheduleEntry(
+                    id=str(item.get("id") or secrets.token_hex(8)),
+                    day=int(item.get("day")),
+                    time=str(item.get("time")),
+                    sound_file=sound_file,
+                    label=str(item.get("label") or ""),
+                    enabled=bool(item.get("enabled", True)),
+                )
+                entries.append(entry_to_json(entry))
+            except Exception:
+                continue
+        merged[name] = sorted(entries, key=lambda entry: (entry["day"], entry["time"], entry["label"]))
+        if schedule.get("active", True):
+            active_name = name
+    save_all_schedules({"active": active_name, "schedules": merged})
+
+
+def run_threadhall_command(command: Dict[str, Any]) -> str:
+    payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+    command_type = str(command.get("type") or "")
+    sound_key = str(payload.get("sound_key") or command_type or "test")
+    if command_type == "activate_schedule":
+        schedule_name = str(payload.get("schedule_name") or "")
+        if schedule_name:
+            activate_schedule(schedule_name)
+            return f"Activated schedule {schedule_name}"
+    sound_file = audio_file_for_key(sound_key)
+    trigger_bell(sound_file, loop=bool(payload.get("loop", False)))
+    return f"Played {audio_display_name(sound_file)} for {payload.get('label') or command_type}"
+
+
+def acknowledge_threadhall_command(config: Dict[str, Any], command_id: Any, status: str, summary: str) -> None:
+    threadhall_request(
+        config,
+        f"api/pibells/v1/commands/{command_id}/ack",
+        method="POST",
+        payload={"status": status, "summary": summary},
+    )
+
+
+def sync_threadhall_once() -> Dict[str, Any]:
+    config = load_threadhall_config()
+    if not config.get("enabled") or not config.get("token") or not config.get("base_url"):
+        return safe_threadhall_status()
+    response = threadhall_request(config, "api/pibells/v1/sync", method="POST", payload=dashboard())
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    apply_threadhall_schedules([item for item in data.get("schedules", []) if isinstance(item, dict)])
+    for command in data.get("commands", []):
+        if not isinstance(command, dict) or "id" not in command:
+            continue
+        try:
+            summary = run_threadhall_command(command)
+            acknowledge_threadhall_command(config, command["id"], "acknowledged", summary)
+        except Exception as exc:
+            try:
+                acknowledge_threadhall_command(config, command["id"], "failed", str(exc))
+            except Exception:
+                pass
+    saved = save_threadhall_config({
+        "enabled": True,
+        "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
+        "last_sync_at": datetime.now().isoformat(timespec="seconds"),
+        "last_error": "",
+    })
+    return {
+        **safe_threadhall_status(),
+        "received_commands": len(data.get("commands", [])),
+        "received_schedules": len(data.get("schedules", [])),
+        "poll_seconds": saved.get("poll_seconds"),
+    }
+
+
+def threadhall_sync_loop() -> None:
+    while True:
+        delay = THREADHALL_DEFAULT_POLL_SECONDS
+        try:
+            status = sync_threadhall_once()
+            delay = int(status.get("poll_seconds") or delay)
+        except Exception as exc:
+            config = load_threadhall_config()
+            if config.get("enabled") and config.get("token"):
+                save_threadhall_config({
+                    "last_error": str(getattr(exc, "detail", exc)),
+                    "last_sync_at": config.get("last_sync_at"),
+                })
+            delay = int(config.get("poll_seconds") or delay)
+        time.sleep(max(10, min(300, delay)))
+
+
+def start_threadhall_sync() -> None:
+    global threadhall_sync_started
+    if threadhall_sync_started or os.environ.get("PIBELLS_DISABLE_THREADHALL_SYNC") == "1":
+        return
+    threadhall_sync_started = True
+    threading.Thread(target=threadhall_sync_loop, daemon=True).start()
 
 
 def find_audio_usages(filename: str) -> Dict[str, List[str]]:
@@ -1116,6 +1438,7 @@ def start_daemon() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     start_daemon()
+    start_threadhall_sync()
     yield
     stop_loops()
 
@@ -1189,6 +1512,35 @@ def change_password(request: Request, body: PasswordChangeRequest):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     save_auth_record(request.state.user, body.new_password)
     return {"status": "updated"}
+
+
+@app.get("/api/threadhall/status")
+def get_threadhall_status():
+    return safe_threadhall_status()
+
+
+@app.post("/api/threadhall/pair")
+def pair_threadhall_device(body: ThreadhallPairRequest):
+    return pair_threadhall(body)
+
+
+@app.post("/api/threadhall/unpair")
+def unpair_threadhall_device():
+    config = load_threadhall_config()
+    save_threadhall_config({
+        "enabled": False,
+        "base_url": config.get("base_url", ""),
+        "device_uuid": config.get("device_uuid") or str(uuid.uuid4()),
+        "device_name": config.get("device_name", ""),
+        "token": "",
+        "last_error": "",
+    })
+    return safe_threadhall_status()
+
+
+@app.post("/api/threadhall/sync-now")
+def sync_threadhall_now():
+    return sync_threadhall_once()
 
 
 @app.get("/api/schedule", response_model=List[ScheduleEntry])

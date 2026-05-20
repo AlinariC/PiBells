@@ -24,6 +24,7 @@ PiBells turns a Raspberry Pi into a browser-managed bell controller. It can play
 - Enable, disable, edit, play, and delete individual bell events
 - Quick-play buttons with colors, icons, and optional loop-until-stopped playback
 - Audio upload, rename, test, and protected delete behavior
+- Bundled default sample pack for routine bells and plain-language emergency prompts
 - Barix device management with nickname support, online status checks, and selectable multi-range discovery
 - Local Raspberry Pi playback through `ffplay` or `aplay`
 - UDP streaming to Barix devices on port `3030`
@@ -68,6 +69,19 @@ PIBELLS_DISABLE_DAEMON=1 uvicorn app.main:app --reload
 Then open `http://127.0.0.1:8000/`.
 
 Runtime data such as `pibells-auth.json`, `audio.json`, and `buttons.json` is intentionally ignored by git.
+
+## Default audio samples
+
+PiBells ships with replaceable default samples for Threadhall sound keys:
+
+- Routine transitions: `start_day`, `passing`, `lunch`, `end_day`, and `test`
+- Emergency prompts: `emergency`, `hold`, `secure`, `lockdown`, `evacuate`, `shelter`, `medical`, and `all_clear`
+
+The emergency files are generic sample recordings, not district policy. Districts can upload their own approved audio from the PiBells admin page and point schedules or buttons at those files. To regenerate the bundled samples on macOS with `say` and `ffmpeg` available:
+
+```bash
+python3 scripts/generate_default_audio.py
+```
 
 ## Testing
 

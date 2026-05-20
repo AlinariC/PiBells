@@ -399,6 +399,14 @@ label span {
   font-size: 1.05rem;
 }
 
+.panel-copy {
+  margin: 6px 0 0;
+  max-width: 54ch;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .text-link {
   color: var(--accent-strong);
   font-weight: 750;
@@ -553,12 +561,37 @@ label span {
   overflow-wrap: anywhere;
 }
 
+.media-main strong {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .event-main span,
 .media-main span,
 .button-main span,
 .subtle {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.media-main .media-badge {
+  color: var(--accent-strong);
+  font-size: 0.68rem;
 }
 
 .event-actions,
@@ -683,9 +716,30 @@ th {
   color: var(--success);
 }
 
+.subtle-pill.online {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
 .status-pill.offline {
   background: color-mix(in srgb, var(--danger) 16%, transparent);
   color: var(--danger);
+}
+
+.settings-summary {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+}
+
+.settings-summary span,
+.settings-summary small {
+  color: var(--muted);
+}
+
+.danger-text {
+  color: var(--danger) !important;
 }
 
 .status-pill.pending {
