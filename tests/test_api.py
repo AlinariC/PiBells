@@ -159,6 +159,7 @@ def test_threadhall_sync_applies_schedules_and_commands(module, monkeypatch):
 
     def fake_threadhall_request(config, path, *, method="GET", payload=None, token=None):
         if path == "api/pibells/v1/sync":
+            assert payload["schedule_options"] == ["Default"]
             return {
                 "data": {
                     "poll_seconds": 15,
@@ -202,6 +203,82 @@ def test_threadhall_sync_applies_schedules_and_commands(module, monkeypatch):
     assert module.load_schedule()[0].label == "Period 1"
     assert played == [("bell-passing-classic.mp3", False)]
     assert acknowledgements[0]["status"] == "acknowledged"
+
+
+def test_dashboard_reports_schedule_options(module):
+    module.save_all_schedules({
+        "active": "Assembly Schedule",
+        "schedules": {
+            "Default": [],
+            "Assembly Schedule": [],
+        },
+    })
+
+    payload = module.dashboard()
+
+    assert payload["active_schedule"] == "Assembly Schedule"
+    assert payload["schedule_options"] == ["Assembly Schedule", "Default"]
+
+
+def test_threadhall_sync_preserves_active_local_alternate_schedule(module, monkeypatch):
+    (module.AUDIO_DIR / "bell-passing-classic.mp3").write_bytes(b"fake mp3")
+    module.save_all_schedules({
+        "active": "Assembly Schedule",
+        "schedules": {
+            "Assembly Schedule": [
+                {
+                    "id": "assembly-1",
+                    "day": 0,
+                    "time": "10:00",
+                    "sound_file": "bell-passing-classic.mp3",
+                    "label": "Assembly",
+                    "enabled": True,
+                }
+            ],
+        },
+    })
+    module.save_threadhall_config({
+        "enabled": True,
+        "base_url": "https://threadhall.example.test",
+        "token": "pb_test_token",
+        "device_uuid": "local-box",
+    })
+
+    def fake_threadhall_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            assert payload["active_schedule"] == "Assembly Schedule"
+            assert payload["schedule_options"] == ["Assembly Schedule"]
+            return {
+                "data": {
+                    "poll_seconds": 15,
+                    "schedules": [
+                        {
+                            "name": "Threadhall - High School",
+                            "active": True,
+                            "entries": [
+                                {
+                                    "id": "bell-1",
+                                    "day": 0,
+                                    "time": "08:10",
+                                    "sound_key": "passing",
+                                    "label": "Period 1",
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "commands": [],
+                }
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_threadhall_request)
+
+    module.sync_threadhall_once()
+
+    schedules = module.load_all_schedules()
+    assert schedules["active"] == "Assembly Schedule"
+    assert "Threadhall - High School" in schedules["schedules"]
 
 
 def test_default_audio_names_are_applied(module):

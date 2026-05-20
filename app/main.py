@@ -761,12 +761,19 @@ def apply_threadhall_schedules(schedules: List[Dict[str, Any]]) -> None:
     if not schedules:
         return
     current = load_all_schedules()
+    current_active = str(current.get("active") or "")
     merged = {
         name: entries
         for name, entries in current.get("schedules", {}).items()
         if not str(name).startswith("Threadhall")
     }
-    active_name = current.get("active") or "Default"
+    preserve_local_active = bool(
+        current_active
+        and current_active != "Default"
+        and not current_active.startswith("Threadhall")
+        and current_active in merged
+    )
+    active_name = current_active if preserve_local_active else (current_active or "Default")
     for schedule in schedules:
         name = normalize_schedule_name(str(schedule.get("name") or "Threadhall"))
         entries: List[Dict[str, Any]] = []
@@ -787,8 +794,10 @@ def apply_threadhall_schedules(schedules: List[Dict[str, Any]]) -> None:
             except Exception:
                 continue
         merged[name] = sorted(entries, key=lambda entry: (entry["day"], entry["time"], entry["label"]))
-        if schedule.get("active", True):
+        if schedule.get("active", True) and not preserve_local_active:
             active_name = name
+    if active_name not in merged:
+        active_name = next(iter(merged.keys()), "Default")
     save_all_schedules({"active": active_name, "schedules": merged})
 
 
@@ -1822,10 +1831,12 @@ def next_event_payload(entries: List[ScheduleEntry]) -> Optional[Dict[str, Any]]
 @app.get("/api/dashboard")
 def dashboard():
     entries = load_schedule()
+    schedules = load_all_schedules()
     devices = load_devices()
     statuses = {device_key(device): check_device(device, timeout=0.25) for device in devices}
     return {
-        "active_schedule": load_all_schedules().get("active"),
+        "active_schedule": schedules.get("active"),
+        "schedule_options": list(schedules.get("schedules", {}).keys()),
         "event_count": len(entries),
         "enabled_event_count": len([entry for entry in entries if entry.enabled]),
         "button_count": len(load_buttons()),
