@@ -1,1 +1,408 @@
-{"active": "Default", "schedules": {"Default": []}}
+{
+  "active": "Threadhall - Reedsport Community Charter School",
+  "schedules": {
+    "Default": [],
+    "Threadhall - Reedsport Community Charter School": [
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-14-0",
+        "label": "Period 1",
+        "sound_file": "bell-start-warm-chime.mp3",
+        "time": "07:55:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-15-0",
+        "label": "Period 2",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "08:57:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-16-0",
+        "label": "Period 3",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "09:59:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-17-0",
+        "label": "HS 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-18-0",
+        "label": "Jr. High Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-19-0",
+        "label": "Jr. High 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:40:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-20-0",
+        "label": "HS Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "12:03:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-21-0",
+        "label": "Period 5",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "12:42:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-22-0",
+        "label": "Period 6",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "13:44:00"
+      },
+      {
+        "day": 0,
+        "enabled": true,
+        "id": "th-23-0",
+        "label": "Period 7",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "14:46:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-14-1",
+        "label": "Period 1",
+        "sound_file": "bell-start-warm-chime.mp3",
+        "time": "07:55:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-15-1",
+        "label": "Period 2",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "08:57:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-16-1",
+        "label": "Period 3",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "09:59:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-17-1",
+        "label": "HS 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-18-1",
+        "label": "Jr. High Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-19-1",
+        "label": "Jr. High 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:40:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-20-1",
+        "label": "HS Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "12:03:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-21-1",
+        "label": "Period 5",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "12:42:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-22-1",
+        "label": "Period 6",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "13:44:00"
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "id": "th-23-1",
+        "label": "Period 7",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "14:46:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-14-2",
+        "label": "Period 1",
+        "sound_file": "bell-start-warm-chime.mp3",
+        "time": "07:55:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-15-2",
+        "label": "Period 2",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "08:57:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-16-2",
+        "label": "Period 3",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "09:59:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-17-2",
+        "label": "HS 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-18-2",
+        "label": "Jr. High Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-19-2",
+        "label": "Jr. High 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:40:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-20-2",
+        "label": "HS Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "12:03:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-21-2",
+        "label": "Period 5",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "12:42:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-22-2",
+        "label": "Period 6",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "13:44:00"
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "id": "th-23-2",
+        "label": "Period 7",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "14:46:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-14-3",
+        "label": "Period 1",
+        "sound_file": "bell-start-warm-chime.mp3",
+        "time": "07:55:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-15-3",
+        "label": "Period 2",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "08:57:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-16-3",
+        "label": "Period 3",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "09:59:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-17-3",
+        "label": "HS 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-18-3",
+        "label": "Jr. High Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-19-3",
+        "label": "Jr. High 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:40:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-20-3",
+        "label": "HS Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "12:03:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-21-3",
+        "label": "Period 5",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "12:42:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-22-3",
+        "label": "Period 6",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "13:44:00"
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "id": "th-23-3",
+        "label": "Period 7",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "14:46:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-14-4",
+        "label": "Period 1",
+        "sound_file": "bell-start-warm-chime.mp3",
+        "time": "07:55:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-15-4",
+        "label": "Period 2",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "08:57:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-16-4",
+        "label": "Period 3",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "09:59:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-17-4",
+        "label": "HS 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-18-4",
+        "label": "Jr. High Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "11:01:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-19-4",
+        "label": "Jr. High 4",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "11:40:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-20-4",
+        "label": "HS Lunch",
+        "sound_file": "bell-lunch-light-chime.mp3",
+        "time": "12:03:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-21-4",
+        "label": "Period 5",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "12:42:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-22-4",
+        "label": "Period 6",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "13:44:00"
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "id": "th-23-4",
+        "label": "Period 7",
+        "sound_file": "bell-passing-classic.mp3",
+        "time": "14:46:00"
+      }
+    ]
+  }
+}
