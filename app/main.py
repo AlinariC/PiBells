@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -33,19 +33,35 @@ AUDIO_DIR = BASE_DIR / "audio"
 AUDIO_META_FILE = BASE_DIR / "audio.json"
 AUTH_FILE = BASE_DIR / "pibells-auth.json"
 BARIX_SCAN_RANGES_FILE = BASE_DIR / "barix-scan-ranges.json"
-THREADHALL_CONFIG_FILE = BASE_DIR / "threadhall-pairing.json"
+PIXELSIS_CONFIG_FILE = BASE_DIR / "pixelsis-pairing.json"
+LEGACY_THREADHALL_CONFIG_FILE = BASE_DIR / "threadhall-pairing.json"
+PIXELSIS_COMMAND_HISTORY_FILE = BASE_DIR / "pixelsis-command-history.json"
 STATIC_DIR = BASE_DIR / "static"
 
 SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
 PASSWORD_ITERATIONS = 320_000
 SESSION_COOKIE = "session"
 BARIX_DISCOVERY_PORT = int(os.environ.get("PIBELLS_BARIX_DISCOVERY_PORT", "30718"))
+BARIX_DISCOVERY_HEADER = bytes((0x81, 0x88, 0x53, 0x81))
+BARIX_DISCOVERY_GET_REQUEST = BARIX_DISCOVERY_HEADER + bytes((0x01,))
+BARIX_DISCOVERY_GET_RESPONSE = 0x81
 BARIX_STREAM_PORT = int(os.environ.get("PIBELLS_BARIX_STREAM_PORT", "3030"))
 BARIX_HTTP_PORT = int(os.environ.get("PIBELLS_BARIX_HTTP_PORT", "80"))
 BARIX_TCP_PORT = int(os.environ.get("PIBELLS_BARIX_TCP_PORT", "2020"))
 BARIX_SCAN_WORKERS = max(8, int(os.environ.get("PIBELLS_BARIX_SCAN_WORKERS", "96")))
 BARIX_SCAN_MAX_HOSTS = max(254, int(os.environ.get("PIBELLS_BARIX_SCAN_MAX_HOSTS", "4096")))
-THREADHALL_DEFAULT_POLL_SECONDS = max(10, int(os.environ.get("PIBELLS_THREADHALL_POLL_SECONDS", "20")))
+LOCAL_OUTPUT_KEY = "local"
+PIXELSIS_DEFAULT_POLL_SECONDS = max(
+    10,
+    int(
+        os.environ.get(
+            "PIBELLS_PIXELSIS_POLL_SECONDS",
+            os.environ.get("PIBELLS_THREADHALL_POLL_SECONDS", "20"),
+        )
+    ),
+)
+PIBELLS_PROTOCOL_VERSION = 1
+PIBELLS_AGENT_VERSION = "pibells-pixelsis-v1"
 DAY_NAMES = [
     "Monday",
     "Tuesday",
@@ -63,7 +79,7 @@ storage_lock = threading.RLock()
 sessions: Dict[str, str] = {}
 loop_processes: List[subprocess.Popen] = []
 daemon_started = False
-threadhall_sync_started = False
+pixelsis_sync_started = False
 
 DEFAULT_AUDIO_KEY_FILES = {
     "start_day": "bell-start-warm-chime.mp3",
@@ -109,6 +125,13 @@ def model_to_dict(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(mode="json")
     return model.dict()
+
+
+def model_fields_set(model: BaseModel) -> set[str]:
+    fields = getattr(model, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(model, "__fields_set__", set())
+    return set(fields)
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -184,6 +207,7 @@ class ScheduleEntry(BaseModel):
     sound_file: str
     label: str = ""
     enabled: bool = True
+    output_keys: Optional[List[str]] = None
 
 
 class ScheduleName(BaseModel):
@@ -223,6 +247,7 @@ class DeviceScanRanges(BaseModel):
 class TestRequest(BaseModel):
     sound_file: str
     loop: Optional[bool] = False
+    output_keys: Optional[List[str]] = None
 
 
 class SetupRequest(BaseModel):
@@ -235,10 +260,14 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
-class ThreadhallPairRequest(BaseModel):
+class PixelSISPairRequest(BaseModel):
     base_url: str
     pairing_code: str
     name: Optional[str] = None
+
+
+# Compatibility for integrations that imported the legacy request model.
+ThreadhallPairRequest = PixelSISPairRequest
 
 
 def entry_to_json(entry: ScheduleEntry) -> Dict[str, Any]:
@@ -351,6 +380,63 @@ def device_stream_url(device: Device) -> str:
     return f"udp://{device.ip}:{device.port}?pkt_size=1200"
 
 
+def output_manifest(
+    devices: Optional[List[Device]] = None,
+    statuses: Optional[Dict[str, bool]] = None,
+) -> List[Dict[str, Any]]:
+    """Describe the stable output keys accepted by targeted playback."""
+    devices = load_devices() if devices is None else devices
+    manifest: List[Dict[str, Any]] = [
+        {
+            "key": LOCAL_OUTPUT_KEY,
+            "type": "local",
+            "name": "Local speaker",
+            "online": True,
+        }
+    ]
+    for device in devices:
+        key = device_key(device)
+        output = {
+            "key": key,
+            "type": "barix",
+            "name": normalize_device_name(device.name, default_device_name(device.ip)),
+            "ip": device.ip,
+            "port": device.port,
+            "online": bool(statuses.get(key, False)) if statuses is not None else None,
+        }
+        manifest.append(output)
+    return manifest
+
+
+def resolve_output_targets(
+    output_keys: Optional[List[str]],
+    devices: Optional[List[Device]] = None,
+) -> Tuple[List[Device], bool]:
+    """Resolve an event's output keys without ever widening an explicit selection."""
+    devices = load_devices() if devices is None else devices
+    if output_keys is None:
+        return list(devices), True
+
+    requested: List[str] = []
+    for value in output_keys:
+        key = str(value).strip()
+        if key and key not in requested:
+            requested.append(key)
+    if not requested:
+        raise HTTPException(status_code=400, detail="Select at least one audio output")
+
+    devices_by_key = {device_key(device): device for device in devices}
+    available_keys = {LOCAL_OUTPUT_KEY, *devices_by_key.keys()}
+    stale_keys = [key for key in requested if key not in available_keys]
+    if stale_keys:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Audio output is no longer configured: {', '.join(stale_keys)}",
+        )
+
+    return [devices_by_key[key] for key in requested if key in devices_by_key], LOCAL_OUTPUT_KEY in requested
+
+
 def normalize_scan_range(value: str) -> str:
     item = (value or "").strip()
     if not item:
@@ -429,9 +515,49 @@ def save_all_schedules(data: Dict[str, Any]) -> None:
         write_json(SCHEDULE_FILE, normalize_schedule_data(data))
 
 
-def load_schedule() -> List[ScheduleEntry]:
+def load_schedule(
+    effective_date: Optional[datetime] = None,
+    *,
+    honor_calendar: bool = True,
+) -> List[ScheduleEntry]:
     data = load_all_schedules()
     active = data.get("active")
+    if honor_calendar:
+        config = load_pixelsis_config()
+        effective_day = (effective_date or datetime.now()).date()
+        date_key = effective_day.isoformat()
+        calendar_day = next(
+            (
+                item
+                for item in config.get("calendar", [])
+                if isinstance(item, dict) and str(item.get("date") or "") == date_key
+            ),
+            None,
+        )
+        if calendar_day:
+            if not bool(calendar_day.get("instructional", True)):
+                return []
+            managed_name = managed_pixelsis_schedule_name(
+                str(calendar_day.get("schedule_name") or "Regular")
+            )
+            if managed_name not in data.get("schedules", {}):
+                return []
+            active = managed_name
+        else:
+            calendar_defaults = config.get("calendar_defaults")
+            if isinstance(calendar_defaults, dict) and calendar_defaults.get("managed") is True:
+                default_key = (
+                    "weekday_schedule_name"
+                    if effective_day.weekday() < 5
+                    else "weekend_schedule_name"
+                )
+                raw_name = calendar_defaults.get(default_key)
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    return []
+                managed_name = managed_pixelsis_schedule_name(raw_name)
+                if managed_name not in data.get("schedules", {}):
+                    return []
+                active = managed_name
     entries = data.get("schedules", {}).get(active, [])
     return [ScheduleEntry(**item) for item in entries]
 
@@ -614,60 +740,78 @@ def audio_display_name(filename: str) -> str:
     return Path(filename).stem
 
 
-def normalize_threadhall_base_url(value: str) -> str:
+def normalize_pixelsis_base_url(value: str) -> str:
     base_url = (value or "").strip().rstrip("/")
     parsed = urllib.parse.urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="Enter a valid Threadhall URL")
+        raise HTTPException(status_code=400, detail="Enter a valid PixelSIS URL")
     return base_url
 
 
-def load_threadhall_config() -> Dict[str, Any]:
-    raw = read_json(THREADHALL_CONFIG_FILE, {})
+def load_pixelsis_config() -> Dict[str, Any]:
+    if not PIXELSIS_CONFIG_FILE.exists() and LEGACY_THREADHALL_CONFIG_FILE.exists():
+        migrated = read_json(LEGACY_THREADHALL_CONFIG_FILE, {})
+        if isinstance(migrated, dict):
+            write_json(PIXELSIS_CONFIG_FILE, migrated)
+            try:
+                PIXELSIS_CONFIG_FILE.chmod(0o600)
+            except OSError:
+                pass
+    raw = read_json(PIXELSIS_CONFIG_FILE, {})
     if not isinstance(raw, dict):
         raw = {}
-    env_base_url = os.environ.get("THREADHALL_BASE_URL", "").strip()
-    env_token = os.environ.get("THREADHALL_PIBELLS_TOKEN", "").strip()
+    env_base_url = os.environ.get(
+        "PIBELLS_PIXELSIS_BASE_URL",
+        os.environ.get("THREADHALL_BASE_URL", ""),
+    ).strip()
+    env_token = os.environ.get(
+        "PIBELLS_PIXELSIS_DEVICE_TOKEN",
+        os.environ.get("THREADHALL_PIBELLS_TOKEN", ""),
+    ).strip()
     if env_base_url:
-        raw["base_url"] = normalize_threadhall_base_url(env_base_url)
+        raw["base_url"] = normalize_pixelsis_base_url(env_base_url)
     if env_token:
         raw["token"] = env_token
         raw["enabled"] = True
     raw.setdefault("enabled", bool(raw.get("token")))
     raw.setdefault("device_uuid", str(uuid.uuid4()))
-    raw.setdefault("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS)
+    raw.setdefault("poll_seconds", PIXELSIS_DEFAULT_POLL_SECONDS)
+    raw.setdefault("protocol_version", PIBELLS_PROTOCOL_VERSION)
+    raw.setdefault("calendar", [])
     return raw
 
 
-def save_threadhall_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def save_pixelsis_config(config: Dict[str, Any]) -> Dict[str, Any]:
     config = {
-        **load_threadhall_config(),
+        **load_pixelsis_config(),
         **config,
     }
-    config["poll_seconds"] = max(10, min(300, int(config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS)))
-    write_json(THREADHALL_CONFIG_FILE, config)
+    config["poll_seconds"] = max(10, min(300, int(config.get("poll_seconds") or PIXELSIS_DEFAULT_POLL_SECONDS)))
+    write_json(PIXELSIS_CONFIG_FILE, config)
     try:
-        THREADHALL_CONFIG_FILE.chmod(0o600)
+        PIXELSIS_CONFIG_FILE.chmod(0o600)
     except OSError:
         pass
     return config
 
 
-def safe_threadhall_status() -> Dict[str, Any]:
-    config = load_threadhall_config()
+def safe_pixelsis_status() -> Dict[str, Any]:
+    config = load_pixelsis_config()
     return {
         "enabled": bool(config.get("enabled") and config.get("token")),
         "paired": bool(config.get("token")),
         "base_url": config.get("base_url", ""),
         "device_uuid": config.get("device_uuid", ""),
         "device_name": config.get("device_name", ""),
-        "poll_seconds": config.get("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS),
+        "poll_seconds": config.get("poll_seconds", PIXELSIS_DEFAULT_POLL_SECONDS),
+        "protocol_version": config.get("protocol_version", PIBELLS_PROTOCOL_VERSION),
+        "schedule_revision": config.get("schedule_revision", ""),
         "last_sync_at": config.get("last_sync_at"),
         "last_error": config.get("last_error", ""),
     }
 
 
-def threadhall_request(
+def pixelsis_request(
     config: Dict[str, Any],
     path: str,
     *,
@@ -675,12 +819,12 @@ def threadhall_request(
     payload: Optional[Dict[str, Any]] = None,
     token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    base_url = normalize_threadhall_base_url(str(config.get("base_url") or ""))
+    base_url = normalize_pixelsis_base_url(str(config.get("base_url") or ""))
     url = f"{base_url}/{path.lstrip('/')}"
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {
         "Accept": "application/json",
-        "User-Agent": "PiBells/ThreadhallSync",
+        "User-Agent": f"PiBells/{PIBELLS_AGENT_VERSION}",
     }
     if data is not None:
         headers["Content-Type"] = "application/json"
@@ -698,52 +842,67 @@ def threadhall_request(
             detail = parsed.get("message") or parsed.get("detail") or body
         except Exception:
             detail = body or exc.reason
-        raise HTTPException(status_code=502, detail=f"Threadhall returned {exc.code}: {detail}")
+        raise HTTPException(status_code=502, detail=f"PixelSIS returned {exc.code}: {detail}")
     except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"Threadhall connection failed: {exc.reason}")
+        raise HTTPException(status_code=502, detail=f"PixelSIS connection failed: {exc.reason}")
     if not body:
         return {}
     try:
         return json.loads(body)
     except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="Threadhall returned invalid JSON")
+        raise HTTPException(status_code=502, detail="PixelSIS returned invalid JSON")
 
 
-def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
-    config = load_threadhall_config()
-    config["base_url"] = normalize_threadhall_base_url(body.base_url)
+def pair_pixelsis(body: PixelSISPairRequest) -> Dict[str, Any]:
+    config = load_pixelsis_config()
+    config["base_url"] = normalize_pixelsis_base_url(body.base_url)
     device_uuid = str(config.get("device_uuid") or uuid.uuid4())
     name = (body.name or config.get("device_name") or socket.gethostname() or "PiBells Controller").strip()
     local_ip = get_local_ip()
     payload = {
+        "protocol_version": PIBELLS_PROTOCOL_VERSION,
         "pairing_code": body.pairing_code,
         "device_uuid": device_uuid,
         "name": name,
-        "local_url": f"http://{local_ip}:8000" if local_ip != "0.0.0.0" else "",
-        "version": "pibells-local",
+        "local_url": f"http://{local_ip}" if local_ip != "0.0.0.0" else "",
+        "hostname": socket.gethostname(),
+        "ip_address": local_ip,
+        "version": PIBELLS_AGENT_VERSION,
         "capabilities": {
             "barix": True,
             "local_audio": True,
-            "outbound_threadhall_sync": True,
+            "targeted_outputs": True,
+            "outbound_pixelsis_sync": True,
+            "revisioned_schedules": True,
+            "calendar_exceptions": True,
+            "calendar_defaults": True,
+            "idempotent_commands": True,
         },
         "status": dashboard(),
     }
-    response = threadhall_request(config, "api/pibells/v1/pair", method="POST", payload=payload, token="")
+    response = pixelsis_request(config, "api/pibells/v1/pair", method="POST", payload=payload, token="")
     data = response.get("data") if isinstance(response.get("data"), dict) else response
     token = str(data.get("token") or "")
     if not token:
-        raise HTTPException(status_code=502, detail="Threadhall did not return a device token")
-    save_threadhall_config({
+        raise HTTPException(status_code=502, detail="PixelSIS did not return a device token")
+    save_pixelsis_config({
         "enabled": True,
         "base_url": config["base_url"],
         "token": token,
         "device_uuid": device_uuid,
         "device_name": name,
-        "poll_seconds": int(data.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
+        "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
+        "poll_seconds": int(data.get("poll_seconds") or PIXELSIS_DEFAULT_POLL_SECONDS),
+        "schedule_revision": "",
+        "managed_schedule_hash": "",
+        "calendar": [],
+        "calendar_defaults": {},
         "paired_at": datetime.now().isoformat(timespec="seconds"),
+        "last_sync_at": None,
         "last_error": "",
     })
-    return safe_threadhall_status()
+    save_pixelsis_command_history({})
+    return safe_pixelsis_status()
 
 
 def audio_file_for_key(sound_key: str) -> str:
@@ -757,25 +916,58 @@ def audio_file_for_key(sound_key: str) -> str:
         raise
 
 
-def apply_threadhall_schedules(schedules: List[Dict[str, Any]]) -> None:
-    if not schedules:
-        return
+def managed_pixelsis_schedule_name(value: str) -> str:
+    name = normalize_schedule_name(value or "Regular")
+    return name if name.startswith("PixelSIS - ") else f"PixelSIS - {name}"
+
+
+def normalize_calendar_defaults(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict) or not isinstance(value.get("managed"), bool):
+        raise HTTPException(
+            status_code=502,
+            detail="PixelSIS returned invalid calendar defaults",
+        )
+
+    normalized: Dict[str, Any] = {"managed": value["managed"]}
+    for key in ("weekday_schedule_name", "weekend_schedule_name"):
+        raw_name = value.get(key)
+        if raw_name is None:
+            normalized[key] = None
+            continue
+        if not isinstance(raw_name, str):
+            raise HTTPException(
+                status_code=502,
+                detail="PixelSIS returned invalid calendar defaults",
+            )
+        cleaned = re.sub(r"\s+", " ", raw_name).strip()
+        if len(cleaned) > 80:
+            raise HTTPException(
+                status_code=502,
+                detail="PixelSIS returned invalid calendar defaults",
+            )
+        normalized[key] = cleaned or None
+    return normalized
+
+
+def apply_pixelsis_schedules(schedules: List[Dict[str, Any]]) -> int:
     current = load_all_schedules()
     current_active = str(current.get("active") or "")
     merged = {
         name: entries
         for name, entries in current.get("schedules", {}).items()
-        if not str(name).startswith("Threadhall")
+        if not str(name).startswith("Threadhall") and not str(name).startswith("PixelSIS - ")
     }
     preserve_local_active = bool(
         current_active
         and current_active != "Default"
         and not current_active.startswith("Threadhall")
+        and not current_active.startswith("PixelSIS - ")
         and current_active in merged
     )
     active_name = current_active if preserve_local_active else (current_active or "Default")
+    applied = 0
     for schedule in schedules:
-        name = normalize_schedule_name(str(schedule.get("name") or "Threadhall"))
+        name = managed_pixelsis_schedule_name(str(schedule.get("name") or "Regular"))
         entries: List[Dict[str, Any]] = []
         for item in schedule.get("entries", []):
             if not isinstance(item, dict):
@@ -789,83 +981,313 @@ def apply_threadhall_schedules(schedules: List[Dict[str, Any]]) -> None:
                     sound_file=sound_file,
                     label=str(item.get("label") or ""),
                     enabled=bool(item.get("enabled", True)),
+                    output_keys=item.get("output_keys") if "output_keys" in item else None,
                 )
                 entries.append(entry_to_json(entry))
             except Exception:
                 continue
         merged[name] = sorted(entries, key=lambda entry: (entry["day"], entry["time"], entry["label"]))
+        applied += 1
         if schedule.get("active", True) and not preserve_local_active:
             active_name = name
     if active_name not in merged:
         active_name = next(iter(merged.keys()), "Default")
     save_all_schedules({"active": active_name, "schedules": merged})
+    return applied
 
 
-def run_threadhall_command(command: Dict[str, Any]) -> str:
+def run_pixelsis_command(command: Dict[str, Any]) -> str:
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
-    command_type = str(command.get("type") or "")
-    sound_key = str(payload.get("sound_key") or command_type or "test")
-    if command_type == "activate_schedule":
+    raw_type = str(command.get("type") or "").strip()
+    command_type = raw_type.upper()
+    emergency_action = raw_type.lower() if raw_type.lower() in EMERGENCY_SOUND_KEYS else ""
+    if command_type == "TEST_BELL":
+        command_type = "TEST_OUTPUT"
+    if command_type == "STOP_AUDIO":
+        stop_loops()
+        return "Stopped active audio"
+    if command_type == "SYNC_NOW":
+        return "Synchronization already in progress"
+    if command_type == "REBOOT":
+        subprocess.Popen(["sudo", "reboot"])
+        return "Controller reboot requested"
+    if command_type == "ACTIVATE_SCHEDULE":
         schedule_name = str(payload.get("schedule_name") or "")
         if schedule_name:
-            activate_schedule(schedule_name)
-            return f"Activated schedule {schedule_name}"
+            managed_name = managed_pixelsis_schedule_name(schedule_name)
+            schedules = load_all_schedules().get("schedules", {})
+            selected = managed_name if managed_name in schedules else schedule_name
+            activate_schedule(selected)
+            return f"Activated schedule {selected}"
+        raise HTTPException(status_code=422, detail="Schedule name is required")
+    if command_type not in {"PLAY_SOUND", "TEST_OUTPUT", "EMERGENCY_ALERT"} and not emergency_action:
+        raise HTTPException(status_code=422, detail=f"Unsupported PixelSIS command: {raw_type}")
+    sound_key = str(
+        payload.get("sound_key")
+        or emergency_action
+        or ("emergency" if command_type == "EMERGENCY_ALERT" else "test")
+    )
     sound_file = audio_file_for_key(sound_key)
-    trigger_bell(sound_file, loop=bool(payload.get("loop", False)))
+    trigger_options: Dict[str, Any] = {"loop": bool(payload.get("loop", False))}
+    if "output_keys" in payload:
+        trigger_options["output_keys"] = payload.get("output_keys")
+    trigger_bell(sound_file, **trigger_options)
     return f"Played {audio_display_name(sound_file)} for {payload.get('label') or command_type}"
 
 
-def acknowledge_threadhall_command(config: Dict[str, Any], command_id: Any, status: str, summary: str) -> None:
-    threadhall_request(
+def acknowledge_pixelsis_command(
+    config: Dict[str, Any],
+    command_id: Any,
+    status: str,
+    summary: str,
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    pixelsis_request(
         config,
         f"api/pibells/v1/commands/{command_id}/ack",
         method="POST",
-        payload={"status": status, "summary": summary},
+        payload={
+            "status": status,
+            "summary": summary,
+            "detail": detail or {},
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+        },
     )
 
 
-def sync_threadhall_once() -> Dict[str, Any]:
-    config = load_threadhall_config()
+def load_pixelsis_command_history() -> Dict[str, Dict[str, Any]]:
+    raw = read_json(PIXELSIS_COMMAND_HISTORY_FILE, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_pixelsis_command_history(history: Dict[str, Dict[str, Any]]) -> None:
+    entries = sorted(
+        history.items(),
+        key=lambda item: str(item[1].get("occurred_at") or ""),
+        reverse=True,
+    )[:500]
+    write_json(PIXELSIS_COMMAND_HISTORY_FILE, dict(entries))
+    try:
+        PIXELSIS_COMMAND_HISTORY_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def pixelsis_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
+    local_ip = get_local_ip()
+    audio_manifest = [
+        {
+            "file": item.file,
+            "name": item.name,
+            "sound_key": item.default_key,
+            "category": item.default_category,
+        }
+        for item in list_audio()
+    ]
+    status = dashboard()
+    return {
+        "protocol_version": PIBELLS_PROTOCOL_VERSION,
+        "device_uuid": str(config.get("device_uuid") or ""),
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "version": PIBELLS_AGENT_VERSION,
+        "local_url": f"http://{local_ip}" if local_ip != "0.0.0.0" else "",
+        "hostname": socket.gethostname(),
+        "ip_address": local_ip,
+        "active_schedule": status.get("active_schedule"),
+        "applied_schedule_revision": config.get("schedule_revision") or "",
+        "schedule_options": status.get("schedule_options", []),
+        "capabilities": {
+            "barix": True,
+            "local_audio": True,
+            "targeted_outputs": True,
+            "revisioned_schedules": True,
+            "calendar_exceptions": True,
+            "calendar_defaults": True,
+            "idempotent_commands": True,
+        },
+        "telemetry": status,
+        "audio_manifest": audio_manifest,
+        "recent_events": [],
+    }
+
+
+def legacy_schedule_revision(schedules: List[Dict[str, Any]]) -> str:
+    canonical_schedules: List[Dict[str, Any]] = []
+    for schedule in schedules:
+        raw_entries = schedule.get("entries", [])
+        entries = (
+            [entry for entry in raw_entries if isinstance(entry, dict)]
+            if isinstance(raw_entries, list)
+            else []
+        )
+        entries = sorted(
+            entries,
+            key=lambda entry: json.dumps(
+                entry,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+        canonical_schedules.append({
+            "name": str(schedule.get("name") or "Regular"),
+            "active": bool(schedule.get("active", True)),
+            "entries": entries,
+        })
+    canonical_schedules.sort(
+        key=lambda schedule: (
+            schedule["name"],
+            json.dumps(
+                schedule,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+    )
+    canonical = json.dumps(
+        canonical_schedules,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"legacy-sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def managed_schedule_state_hash() -> str:
+    schedules = load_all_schedules().get("schedules", {})
+    managed = {
+        name: entries
+        for name, entries in schedules.items()
+        if str(name).startswith("PixelSIS - ")
+    }
+    canonical = json.dumps(
+        managed,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"managed-sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def sync_pixelsis_once() -> Dict[str, Any]:
+    config = load_pixelsis_config()
     if not config.get("enabled") or not config.get("token") or not config.get("base_url"):
-        return safe_threadhall_status()
-    response = threadhall_request(config, "api/pibells/v1/sync", method="POST", payload=dashboard())
+        return safe_pixelsis_status()
+    response = pixelsis_request(
+        config,
+        "api/pibells/v1/sync",
+        method="POST",
+        payload=pixelsis_sync_payload(config),
+    )
     data = response.get("data") if isinstance(response.get("data"), dict) else response
-    apply_threadhall_schedules([item for item in data.get("schedules", []) if isinstance(item, dict)])
+    raw_schedules = data.get("schedules")
+    schedules_supplied = isinstance(raw_schedules, list)
+    schedules = [item for item in raw_schedules if isinstance(item, dict)] if schedules_supplied else []
+    raw_calendar = data.get("calendar")
+    calendar_supplied = isinstance(raw_calendar, list)
+    calendar = [item for item in raw_calendar if isinstance(item, dict)] if calendar_supplied else []
+    calendar_defaults_supplied = "calendar_defaults" in data
+    calendar_defaults = (
+        normalize_calendar_defaults(data.get("calendar_defaults"))
+        if calendar_defaults_supplied
+        else None
+    )
+    server_schedule_revision = str(data.get("schedule_revision") or "")
+    schedule_revision = server_schedule_revision or (
+        legacy_schedule_revision(schedules) if schedules else ""
+    )
+    received_schedules = 0
+    revision_changed = bool(
+        schedule_revision
+        and schedule_revision != str(config.get("schedule_revision") or "")
+    )
+    persisted_state_hash = str(config.get("managed_schedule_hash") or "")
+    state_hash_mismatch = bool(
+        schedules_supplied
+        and (
+            not persisted_state_hash
+            or managed_schedule_state_hash() != persisted_state_hash
+        )
+    )
+    if schedules_supplied and (revision_changed or state_hash_mismatch):
+        received_schedules = apply_pixelsis_schedules(schedules)
+        schedule_updates: Dict[str, Any] = {
+            "schedule_revision": schedule_revision,
+        }
+        if calendar_supplied:
+            schedule_updates["calendar"] = calendar
+        if calendar_defaults_supplied:
+            schedule_updates["calendar_defaults"] = calendar_defaults
+        schedule_updates["managed_schedule_hash"] = managed_schedule_state_hash()
+        config = save_pixelsis_config(schedule_updates)
+    history = load_pixelsis_command_history()
     for command in data.get("commands", []):
         if not isinstance(command, dict) or "id" not in command:
             continue
+        command_id = str(command["id"])
+        previous = history.get(command_id)
+        if previous:
+            acknowledge_pixelsis_command(
+                config,
+                command["id"],
+                str(previous.get("status") or "acknowledged"),
+                str(previous.get("summary") or "Previously executed"),
+                {"duplicate_delivery": True},
+            )
+            continue
         try:
-            summary = run_threadhall_command(command)
-            acknowledge_threadhall_command(config, command["id"], "acknowledged", summary)
+            summary = run_pixelsis_command(command)
+            outcome = {
+                "status": "acknowledged",
+                "summary": summary,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            }
         except Exception as exc:
-            try:
-                acknowledge_threadhall_command(config, command["id"], "failed", str(exc))
-            except Exception:
-                pass
-    saved = save_threadhall_config({
+            outcome = {
+                "status": "failed",
+                "summary": str(getattr(exc, "detail", exc)),
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            }
+        history[command_id] = outcome
+        save_pixelsis_command_history(history)
+        acknowledge_pixelsis_command(
+            config,
+            command["id"],
+            outcome["status"],
+            outcome["summary"],
+        )
+    sync_updates: Dict[str, Any] = {
         "enabled": True,
-        "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
+        "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
+        "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or PIXELSIS_DEFAULT_POLL_SECONDS),
+        "schedule_revision": schedule_revision or config.get("schedule_revision", ""),
         "last_sync_at": datetime.now().isoformat(timespec="seconds"),
         "last_error": "",
-    })
+    }
+    if calendar_supplied:
+        sync_updates["calendar"] = calendar
+    if calendar_defaults_supplied:
+        sync_updates["calendar_defaults"] = calendar_defaults
+    saved = save_pixelsis_config(sync_updates)
     return {
-        **safe_threadhall_status(),
+        **safe_pixelsis_status(),
         "received_commands": len(data.get("commands", [])),
-        "received_schedules": len(data.get("schedules", [])),
+        "received_schedules": received_schedules,
         "poll_seconds": saved.get("poll_seconds"),
     }
 
 
-def threadhall_sync_loop() -> None:
+def pixelsis_sync_loop() -> None:
     while True:
-        delay = THREADHALL_DEFAULT_POLL_SECONDS
+        delay = PIXELSIS_DEFAULT_POLL_SECONDS
         try:
-            status = sync_threadhall_once()
+            status = sync_pixelsis_once()
             delay = int(status.get("poll_seconds") or delay)
         except Exception as exc:
-            config = load_threadhall_config()
+            config = load_pixelsis_config()
             if config.get("enabled") and config.get("token"):
-                save_threadhall_config({
+                save_pixelsis_config({
                     "last_error": str(getattr(exc, "detail", exc)),
                     "last_sync_at": config.get("last_sync_at"),
                 })
@@ -873,12 +1295,28 @@ def threadhall_sync_loop() -> None:
         time.sleep(max(10, min(300, delay)))
 
 
-def start_threadhall_sync() -> None:
-    global threadhall_sync_started
-    if threadhall_sync_started or os.environ.get("PIBELLS_DISABLE_THREADHALL_SYNC") == "1":
+def start_pixelsis_sync() -> None:
+    global pixelsis_sync_started
+    disabled = os.environ.get("PIBELLS_DISABLE_PIXELSIS_SYNC") == "1" or os.environ.get("PIBELLS_DISABLE_THREADHALL_SYNC") == "1"
+    if pixelsis_sync_started or disabled:
         return
-    threadhall_sync_started = True
-    threading.Thread(target=threadhall_sync_loop, daemon=True).start()
+    pixelsis_sync_started = True
+    threading.Thread(target=pixelsis_sync_loop, daemon=True).start()
+
+
+# Compatibility aliases for existing PiBells deployments and local extensions.
+normalize_threadhall_base_url = normalize_pixelsis_base_url
+load_threadhall_config = load_pixelsis_config
+save_threadhall_config = save_pixelsis_config
+safe_threadhall_status = safe_pixelsis_status
+threadhall_request = pixelsis_request
+pair_threadhall = pair_pixelsis
+apply_threadhall_schedules = apply_pixelsis_schedules
+run_threadhall_command = run_pixelsis_command
+acknowledge_threadhall_command = acknowledge_pixelsis_command
+sync_threadhall_once = sync_pixelsis_once
+threadhall_sync_loop = pixelsis_sync_loop
+start_threadhall_sync = start_pixelsis_sync
 
 
 def find_audio_usages(filename: str) -> Dict[str, List[str]]:
@@ -991,22 +1429,31 @@ def current_session_user(request: Request) -> Optional[str]:
     return sessions.get(token)
 
 
-def stop_loops() -> None:
-    global loop_processes
-    for proc in loop_processes:
+def terminate_processes(processes: List[subprocess.Popen]) -> None:
+    for proc in processes:
         try:
             proc.terminate()
         except Exception:
             pass
-    for proc in loop_processes:
+    for proc in processes:
         try:
             proc.wait(timeout=1)
         except Exception:
             try:
                 proc.kill()
             except Exception:
+                continue
+            try:
+                proc.wait(timeout=1)
+            except Exception:
                 pass
+
+
+def stop_loops() -> None:
+    global loop_processes
+    processes = loop_processes
     loop_processes = []
+    terminate_processes(processes)
 
 
 def get_local_ip() -> str:
@@ -1136,10 +1583,42 @@ def iter_probe_hosts(networks: List[ipaddress.IPv4Network]) -> Tuple[List[str], 
 
 
 def parse_barix_discovery_payload(data: bytes) -> Dict[str, str]:
-    text = data.decode("latin-1", errors="ignore")
     meta: Dict[str, str] = {}
+
+    if data.startswith(BARIX_DISCOVERY_HEADER):
+        if len(data) < 15 or data[4] != BARIX_DISCOVERY_GET_RESPONSE:
+            return meta
+
+        meta["mac"] = ":".join(f"{value:02X}" for value in data[5:11])
+        packet_ip = ipaddress.ip_address(data[11:15])
+        if not packet_ip.is_unspecified and not packet_ip.is_multicast:
+            meta["ip"] = str(packet_ip)
+
+        fields: List[bytes] = []
+        offset = 15
+        for _ in range(4):
+            if offset >= len(data):
+                break
+            length = data[offset]
+            offset += 1
+            end = offset + length
+            if end > len(data):
+                break
+            fields.append(data[offset:end])
+            offset = end
+
+        decoded = [
+            field.decode("latin-1", errors="ignore").strip("\x00 \t\r\n")
+            for field in fields
+        ]
+        text = " ".join(value for value in decoded if value)
+        if len(decoded) >= 4 and decoded[3]:
+            meta["name"] = re.sub(r"\s+", " ", decoded[3])
+    else:
+        text = data.decode("latin-1", errors="ignore")
+
     mac = re.search(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", text)
-    if mac:
+    if mac and "mac" not in meta:
         meta["mac"] = mac.group(0).upper().replace("-", ":")
     for token in ("Exstreamer", "Instreamer", "Annuncicom", "IP Audio", "Barix"):
         if token.lower() in text.lower():
@@ -1149,8 +1628,8 @@ def parse_barix_discovery_payload(data: bytes) -> Dict[str, str]:
 
 
 def candidate_payload(ip: str, method: str, meta: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    ip = normalize_device_ip(ip)
     meta = meta or {}
+    ip = normalize_device_ip(meta.get("ip") or ip)
     model = meta.get("model") or "Barix device"
     name = meta.get("name") or f"{model} {ip}"
     return {
@@ -1184,25 +1663,36 @@ def discover_barix_binary(networks: List[ipaddress.IPv4Network], timeout: float 
 
     found: Dict[str, Dict[str, Any]] = {}
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.settimeout(0.15)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener, socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM
+        ) as sender:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("0.0.0.0", BARIX_DISCOVERY_PORT))
+            listener.settimeout(0.15)
+            sender.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sender.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sender.bind(("0.0.0.0", BARIX_DISCOVERY_PORT + 1))
+            except OSError:
+                pass
             for address in destinations:
-                for payload in (b"GET", b"GET\x00"):
-                    try:
-                        sock.sendto(payload, (address, BARIX_DISCOVERY_PORT))
-                    except OSError:
-                        pass
+                try:
+                    sender.sendto(BARIX_DISCOVERY_GET_REQUEST, (address, BARIX_DISCOVERY_PORT))
+                except OSError:
+                    pass
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 try:
-                    data, (ip, _) = sock.recvfrom(4096)
+                    data, (ip, _) = listener.recvfrom(4096)
                 except socket.timeout:
                     continue
                 except OSError:
                     break
+                meta = parse_barix_discovery_payload(data)
+                if not meta:
+                    continue
                 try:
-                    candidate = candidate_payload(ip, "UDP discovery", parse_barix_discovery_payload(data))
+                    candidate = candidate_payload(ip, "UDP discovery", meta)
                 except HTTPException:
                     continue
                 found[candidate["key"]] = candidate
@@ -1323,15 +1813,29 @@ def check_device(device: Device, timeout: float = 0.5) -> bool:
     return barix_tcp_probe(target.ip, timeout)
 
 
-def trigger_bell(sound_file: str, loop: bool = False) -> None:
+def trigger_bell(
+    sound_file: str,
+    loop: bool = False,
+    output_keys: Optional[List[str]] = None,
+) -> None:
     global loop_processes
     sound_file = ensure_audio_exists(sound_file)
     devices = load_devices()
+    selected_devices, play_local = resolve_output_targets(output_keys, devices)
     path = audio_path(sound_file)
 
-    def start_process(cmd: List[str], label: str) -> Optional[subprocess.Popen]:
+    def start_process(
+        cmd: List[str],
+        label: str,
+        *,
+        capture_stderr: bool = False,
+    ) -> Optional[subprocess.Popen]:
         try:
-            return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
+            )
         except FileNotFoundError as exc:
             print(f"Failed to start {label}: {exc}")
         except Exception as exc:
@@ -1368,14 +1872,6 @@ def trigger_bell(sound_file: str, loop: bool = False) -> None:
             "-loglevel",
             "error",
             "-re",
-            "-fflags",
-            "+nobuffer",
-            "-flush_packets",
-            "1",
-            "-muxdelay",
-            "0",
-            "-muxpreload",
-            "0",
         ]
         if loop:
             ffmpeg_cmd += ["-stream_loop", "-1"]
@@ -1388,47 +1884,109 @@ def trigger_bell(sound_file: str, loop: bool = False) -> None:
             "libmp3lame",
             "-b:a",
             "128k",
+            "-flush_packets",
+            "1",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
             device_stream_url(device),
         ]
-        return start_process(ffmpeg_cmd, f"stream to {device.ip}")
+        return start_process(
+            ffmpeg_cmd,
+            f"stream to {device.ip}",
+            capture_stderr=True,
+        )
+
+    def process_error(proc: subprocess.Popen) -> str:
+        if proc.stderr is None:
+            return ""
+        try:
+            output = proc.stderr.read()
+            if isinstance(output, bytes):
+                return output.decode("utf-8", errors="replace").strip()
+            return str(output or "").strip()
+        except Exception:
+            return ""
+
+    def validate_stream_processes(procs: List[subprocess.Popen]) -> None:
+        if selected_devices and len(procs) != len(selected_devices):
+            raise RuntimeError("Unable to start every configured audio stream")
+        time.sleep(0.1)
+        failures = []
+        for proc in procs:
+            return_code = proc.poll()
+            if return_code not in (None, 0):
+                detail = process_error(proc)
+                failures.append(detail or f"FFmpeg exited with status {return_code}")
+        if failures:
+            raise RuntimeError("Audio stream failed to start: " + "; ".join(failures))
 
     def reap_processes(procs: List[subprocess.Popen]) -> None:
         for proc in procs:
             try:
-                proc.wait()
+                return_code = proc.wait()
+                if return_code not in (None, 0):
+                    detail = process_error(proc)
+                    print(detail or f"Audio process exited with status {return_code}")
             except Exception:
                 pass
 
     if loop:
         stop_loops()
-        procs = [start_stream(device) for device in devices]
-        local_proc = start_local()
-        loop_processes = [proc for proc in procs if proc]
-        if local_proc:
-            loop_processes.append(local_proc)
+        procs = [start_stream(device) for device in selected_devices]
+        stream_procs = [proc for proc in procs if proc]
+        started_procs = list(stream_procs)
+        try:
+            validate_stream_processes(stream_procs)
+            local_proc = start_local() if play_local else None
+            if play_local and local_proc is None:
+                raise RuntimeError("Unable to start local audio playback")
+            if local_proc:
+                started_procs.append(local_proc)
+            loop_processes = started_procs
+        except Exception:
+            loop_processes = []
+            terminate_processes(started_procs)
+            raise
         return
 
-    procs = [proc for proc in [start_stream(device) for device in devices] if proc]
-    local_proc = start_local()
-    if local_proc:
-        procs.append(local_proc)
+    procs = [proc for proc in [start_stream(device) for device in selected_devices] if proc]
+    try:
+        validate_stream_processes(procs)
+        local_proc = start_local() if play_local else None
+        if play_local and local_proc is None:
+            raise RuntimeError("Unable to start local audio playback")
+        if local_proc:
+            procs.append(local_proc)
+    except Exception:
+        terminate_processes(procs)
+        raise
     if procs:
         threading.Thread(target=reap_processes, args=(procs,), daemon=True).start()
+
+
+def dispatch_due_events(now: Optional[datetime] = None) -> None:
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    weekday = now.weekday()
+    for event in load_schedule(now):
+        if not (
+            event.enabled
+            and event.day == weekday
+            and event.time.hour == now.hour
+            and event.time.minute == now.minute
+        ):
+            continue
+        try:
+            trigger_bell(event.sound_file, output_keys=event.output_keys)
+        except Exception as exc:
+            print(f"Bell event {event.id} failed: {getattr(exc, 'detail', exc)}")
 
 
 def bell_daemon() -> None:
     while True:
         try:
-            now = datetime.now().replace(second=0, microsecond=0)
-            weekday = now.weekday()
-            for event in load_schedule():
-                if (
-                    event.enabled
-                    and event.day == weekday
-                    and event.time.hour == now.hour
-                    and event.time.minute == now.minute
-                ):
-                    trigger_bell(event.sound_file)
+            dispatch_due_events()
         except Exception as exc:
             print(f"Bell daemon error: {exc}")
         now = datetime.now()
@@ -1447,7 +2005,7 @@ def start_daemon() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     start_daemon()
-    start_threadhall_sync()
+    start_pixelsis_sync()
     yield
     stop_loops()
 
@@ -1523,20 +2081,19 @@ def change_password(request: Request, body: PasswordChangeRequest):
     return {"status": "updated"}
 
 
-@app.get("/api/threadhall/status")
-def get_threadhall_status():
-    return safe_threadhall_status()
+@app.get("/api/pixelsis/status")
+def get_pixelsis_status():
+    return safe_pixelsis_status()
 
 
-@app.post("/api/threadhall/pair")
-def pair_threadhall_device(body: ThreadhallPairRequest):
-    return pair_threadhall(body)
+@app.post("/api/pixelsis/pair")
+def pair_pixelsis_device(body: PixelSISPairRequest):
+    return pair_pixelsis(body)
 
 
-@app.post("/api/threadhall/unpair")
-def unpair_threadhall_device():
-    config = load_threadhall_config()
-    save_threadhall_config({
+def unpair_pixelsis() -> Dict[str, Any]:
+    config = load_pixelsis_config()
+    save_pixelsis_config({
         "enabled": False,
         "base_url": config.get("base_url", ""),
         "device_uuid": config.get("device_uuid") or str(uuid.uuid4()),
@@ -1544,12 +2101,39 @@ def unpair_threadhall_device():
         "token": "",
         "last_error": "",
     })
-    return safe_threadhall_status()
+    save_pixelsis_command_history({})
+    return safe_pixelsis_status()
 
 
-@app.post("/api/threadhall/sync-now")
+@app.post("/api/pixelsis/unpair")
+def unpair_pixelsis_device():
+    return unpair_pixelsis()
+
+
+@app.post("/api/pixelsis/sync-now")
+def sync_pixelsis_now():
+    return sync_pixelsis_once()
+
+
+# Deprecated route aliases keep already-deployed dashboards operable during migration.
+@app.get("/api/threadhall/status", deprecated=True)
+def get_threadhall_status():
+    return safe_pixelsis_status()
+
+
+@app.post("/api/threadhall/pair", deprecated=True)
+def pair_threadhall_device(body: PixelSISPairRequest):
+    return pair_pixelsis(body)
+
+
+@app.post("/api/threadhall/unpair", deprecated=True)
+def unpair_threadhall_device():
+    return unpair_pixelsis()
+
+
+@app.post("/api/threadhall/sync-now", deprecated=True)
 def sync_threadhall_now():
-    return sync_threadhall_once()
+    return sync_pixelsis_once()
 
 
 @app.get("/api/schedule", response_model=List[ScheduleEntry])
@@ -1560,33 +2144,36 @@ def get_schedule():
 @app.post("/api/schedule", response_model=List[ScheduleEntry])
 def add_schedule(entry: ScheduleEntry):
     entry.sound_file = ensure_audio_exists(entry.sound_file)
-    entries = load_schedule()
+    entries = load_schedule(honor_calendar=False)
     entries.append(entry)
     save_schedule(entries)
-    return load_schedule()
+    return load_schedule(honor_calendar=False)
 
 
 @app.put("/api/schedule/{entry_id}", response_model=List[ScheduleEntry])
 def update_schedule_entry(entry_id: str, entry: ScheduleEntry):
     entry.sound_file = ensure_audio_exists(entry.sound_file)
-    entries = load_schedule()
+    supplied_fields = model_fields_set(entry)
+    entries = load_schedule(honor_calendar=False)
     for index, existing in enumerate(entries):
         if existing.id == entry_id:
             entry.id = existing.id
+            if "output_keys" not in supplied_fields:
+                entry.output_keys = existing.output_keys
             entries[index] = entry
             save_schedule(entries)
-            return load_schedule()
+            return load_schedule(honor_calendar=False)
     raise HTTPException(status_code=404, detail="Schedule entry not found")
 
 
 @app.delete("/api/schedule/{entry_id}", response_model=List[ScheduleEntry])
 def delete_schedule_entry(entry_id: str):
-    entries = load_schedule()
+    entries = load_schedule(honor_calendar=False)
     for index, entry in enumerate(entries):
         if entry.id == entry_id or str(index) == entry_id:
             entries.pop(index)
             save_schedule(entries)
-            return load_schedule()
+            return load_schedule(honor_calendar=False)
     raise HTTPException(status_code=404, detail="Schedule entry not found")
 
 
@@ -1790,7 +2377,10 @@ def delete_button(button_id: str):
 
 @app.post("/api/test")
 def test_sound(req: TestRequest):
-    trigger_bell(req.sound_file, loop=bool(req.loop))
+    trigger_options: Dict[str, Any] = {"loop": bool(req.loop)}
+    if req.output_keys is not None:
+        trigger_options["output_keys"] = req.output_keys
+    trigger_bell(req.sound_file, **trigger_options)
     return {"status": "ok"}
 
 
@@ -1800,17 +2390,24 @@ def stop_sound():
     return {"status": "stopped"}
 
 
-def next_event_payload(entries: List[ScheduleEntry]) -> Optional[Dict[str, Any]]:
-    now = datetime.now()
+def next_event_payload(
+    entries: Optional[List[ScheduleEntry]] = None,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    now = now or datetime.now()
     audio_names = {audio.file: audio.name for audio in list_audio()}
     candidates: List[Tuple[datetime, ScheduleEntry]] = []
     for days_ahead in range(8):
         target_day = (now.weekday() + days_ahead) % 7
         target_date = now.date() + timedelta(days=days_ahead)
-        for entry in entries:
+        effective_entries = entries if days_ahead == 0 and entries is not None else load_schedule(
+            datetime.combine(target_date, dt_time.min).replace(tzinfo=now.tzinfo)
+        )
+        for entry in effective_entries:
             if not entry.enabled or entry.day != target_day:
                 continue
-            candidate = datetime.combine(target_date, entry.time)
+            candidate = datetime.combine(target_date, entry.time).replace(tzinfo=now.tzinfo)
             if candidate > now:
                 candidates.append((candidate, entry))
     if not candidates:
@@ -1824,6 +2421,7 @@ def next_event_payload(entries: List[ScheduleEntry]) -> Optional[Dict[str, Any]]
         "time": entry.time.strftime("%H:%M"),
         "sound_file": entry.sound_file,
         "sound_name": audio_names.get(entry.sound_file, Path(entry.sound_file).stem),
+        "output_keys": entry.output_keys,
         "in_minutes": max(0, int((candidate - now).total_seconds() // 60)),
     }
 
@@ -1843,6 +2441,7 @@ def dashboard():
         "audio_count": len(list_audio()),
         "device_count": len(devices),
         "online_device_count": len([online for online in statuses.values() if online]),
+        "outputs": output_manifest(devices, statuses),
         "next_event": next_event_payload(entries),
     }
 
