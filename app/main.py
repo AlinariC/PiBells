@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -73,6 +74,9 @@ THREADHALL_DEFAULT_POLL_SECONDS = max(
 )
 PIBELLS_PROTOCOL_VERSION = 1
 PIBELLS_AGENT_VERSION = "pibells-threadhall-v1"
+THREADHALL_MAX_CLOCK_SKEW_SECONDS = 5
+THREADHALL_MAX_CLOCK_SAMPLE_AGE_SECONDS = 120
+THREADHALL_MAX_CLOCK_JUMP_SECONDS = 5
 DAY_NAMES = [
     "Monday",
     "Tuesday",
@@ -88,10 +92,16 @@ STATIC_DIR.mkdir(exist_ok=True)
 
 storage_lock = threading.RLock()
 threadhall_integration_lock = threading.RLock()
+threadhall_sync_request_lock = threading.Lock()
+threadhall_ack_worker_lock = threading.Lock()
+THREADHALL_ACK_ATTEMPTS_PER_SYNC = 4
+threadhall_ack_retry_cursor = 0
 sessions: Dict[str, str] = {}
 loop_processes: List[subprocess.Popen] = []
 daemon_started = False
 threadhall_sync_started = False
+threadhall_clock_proof: Optional[Dict[str, Any]] = None
+threadhall_clock_error = "server_clock_not_verified"
 
 DEFAULT_AUDIO_KEY_FILES = {
     "start_day": "bell-start-warm-chime.mp3",
@@ -567,11 +577,23 @@ def _resolve_effective_schedule_unlocked(
 ) -> Tuple[List[ScheduleEntry], Dict[str, Any]]:
     data = load_all_schedules()
     active = data.get("active")
-    effective_day = (effective_date or datetime.now()).date()
+    config = load_threadhall_config()
+    _, district_zone, _ = configured_district_time_zone(config)
+    managed_authority = threadhall_manages_current_schedule(config, active)
+    if effective_date is None:
+        current = (
+            datetime.now(district_zone)
+            if managed_authority and district_zone
+            else datetime.now()
+        )
+    elif effective_date.tzinfo is not None and managed_authority and district_zone:
+        current = effective_date.astimezone(district_zone)
+    else:
+        current = effective_date
+    effective_day = current.date()
     source = "active"
     managed = is_threadhall_managed_schedule_name(str(active or ""))
     if honor_calendar:
-        config = load_threadhall_config()
         date_key = effective_day.isoformat()
         calendar_defaults = config.get("calendar_defaults")
         calendar_managed = (
@@ -824,6 +846,154 @@ def normalize_threadhall_base_url(value: str) -> str:
     return base_url
 
 
+def configured_district_time_zone(
+    config: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[ZoneInfo], str]:
+    raw = os.environ.get("PIBELLS_DISTRICT_TIME_ZONE", config.get("district_time_zone"))
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None, "district_time_zone_missing"
+    name = raw.strip()
+    try:
+        return name, ZoneInfo(name), ""
+    except (ValueError, ZoneInfoNotFoundError):
+        return name, None, "district_time_zone_invalid"
+
+
+def clear_threadhall_clock_proof() -> None:
+    global threadhall_clock_proof, threadhall_clock_error
+    threadhall_clock_proof = None
+    threadhall_clock_error = "server_clock_not_verified"
+
+
+def threadhall_manages_current_schedule(config: Dict[str, Any], active: Any) -> bool:
+    defaults = config.get("calendar_defaults")
+    return is_threadhall_managed_schedule_name(str(active or "")) or bool(
+        isinstance(defaults, dict) and defaults.get("managed") is True
+    )
+
+
+def record_threadhall_clock_sample(
+    config: Dict[str, Any],
+    server_time: Any,
+    started_utc: datetime,
+    ended_utc: datetime,
+    started_monotonic: float,
+    ended_monotonic: float,
+) -> None:
+    """Accept a bounded server-clock sample only for the current pairing authority."""
+    global threadhall_clock_proof, threadhall_clock_error
+    threadhall_clock_proof = None
+    threadhall_clock_error = "server_clock_not_verified"
+    authority = stored_threadhall_authority(config.get("authority"))
+    zone_name, zone, _ = configured_district_time_zone(config)
+    if not authority or not zone:
+        return
+    if not isinstance(server_time, str):
+        threadhall_clock_error = "server_time_missing"
+        return
+    try:
+        server_utc = datetime.fromisoformat(server_time.replace("Z", "+00:00"))
+    except ValueError:
+        threadhall_clock_error = "server_time_invalid"
+        return
+    if server_utc.tzinfo is None:
+        threadhall_clock_error = "server_time_invalid"
+        return
+    server_utc = server_utc.astimezone(timezone.utc)
+    duration = ended_monotonic - started_monotonic
+    if duration < 0 or duration > THREADHALL_MAX_CLOCK_SKEW_SECONDS:
+        threadhall_clock_error = "server_clock_sample_slow"
+        return
+    # The server sampled its database clock inside this request. Its exact
+    # position in the request interval is unknown, so check the worst bound.
+    skew_bound = max(
+        abs((server_utc - started_utc).total_seconds()),
+        abs((server_utc - ended_utc).total_seconds()),
+    )
+    if skew_bound > THREADHALL_MAX_CLOCK_SKEW_SECONDS:
+        threadhall_clock_error = "controller_clock_skew"
+        return
+    threadhall_clock_error = ""
+    threadhall_clock_proof = {
+        "authority": authority,
+        "district_time_zone": zone_name,
+        "verified_at_utc": ended_utc,
+        "verified_at_monotonic": ended_monotonic,
+        "offset_estimate_seconds": round(
+            (server_utc - (started_utc + (ended_utc - started_utc) / 2)).total_seconds(),
+            3,
+        ),
+        "skew_bound_seconds": round(skew_bound, 3),
+    }
+
+
+def managed_schedule_clock_status(
+    config: Optional[Dict[str, Any]] = None,
+    *,
+    now_utc: Optional[datetime] = None,
+    now_monotonic: Optional[float] = None,
+) -> Dict[str, Any]:
+    config = config if config is not None else load_threadhall_config()
+    now_utc = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    now_monotonic = now_monotonic if now_monotonic is not None else time.monotonic()
+    zone_name, zone, zone_error = configured_district_time_zone(config)
+    required = threadhall_manages_current_schedule(
+        config, load_all_schedules().get("active")
+    )
+    host_offset = datetime.now().astimezone().utcoffset()
+    status: Dict[str, Any] = {
+        "ready": False,
+        "required_for_dispatch": required,
+        "reason": zone_error or threadhall_clock_error or "server_clock_not_verified",
+        "district_time_zone": zone_name,
+        "district_utc_offset_minutes": (
+            int(now_utc.astimezone(zone).utcoffset().total_seconds() // 60)
+            if zone else None
+        ),
+        "host_utc_offset_minutes": (
+            int(host_offset.total_seconds() // 60) if host_offset else 0
+        ),
+        "clock_offset_estimate_seconds": None,
+        "clock_skew_bound_seconds": None,
+        "clock_sample_age_seconds": None,
+    }
+    if not required:
+        status["ready"] = True
+        status["reason"] = "local_schedule"
+        return status
+    if zone_error:
+        return status
+    if not (
+        config.get("enabled")
+        and config.get("token")
+        and stored_threadhall_authority(config.get("authority"))
+    ):
+        status["reason"] = "threadhall_not_paired"
+        return status
+    proof = threadhall_clock_proof
+    if (
+        not proof
+        or proof["authority"] != stored_threadhall_authority(config.get("authority"))
+        or proof["district_time_zone"] != zone_name
+    ):
+        return status
+    age = now_monotonic - proof["verified_at_monotonic"]
+    wall_elapsed = (now_utc - proof["verified_at_utc"]).total_seconds()
+    status.update({
+        "clock_offset_estimate_seconds": proof["offset_estimate_seconds"],
+        "clock_skew_bound_seconds": proof["skew_bound_seconds"],
+        "clock_sample_age_seconds": round(max(age, 0), 3),
+    })
+    if age < 0 or abs(wall_elapsed - age) > THREADHALL_MAX_CLOCK_JUMP_SECONDS:
+        status["reason"] = "controller_clock_changed"
+    elif age > THREADHALL_MAX_CLOCK_SAMPLE_AGE_SECONDS:
+        status["reason"] = "server_clock_sample_stale"
+    else:
+        status["ready"] = True
+        status["reason"] = "verified"
+    return status
+
+
 def load_threadhall_config() -> Dict[str, Any]:
     if not THREADHALL_CONFIG_FILE.exists() and LEGACY_THREADHALL_CONFIG_FILE.exists():
         migrated = read_json(LEGACY_THREADHALL_CONFIG_FILE, {})
@@ -903,6 +1073,7 @@ def safe_threadhall_status() -> Dict[str, Any]:
         "protocol_version": config.get("protocol_version", PIBELLS_PROTOCOL_VERSION),
         "schedule_revision": config.get("schedule_revision", ""),
         "last_sync_at": config.get("last_sync_at"),
+        "schedule_clock": managed_schedule_clock_status(config),
         "last_error": config.get("last_error", "") or (
             "Re-pair with Threadhall to establish complete controller authority."
             if config.get("token") and not authority
@@ -961,6 +1132,7 @@ def normalize_threadhall_authority(value: Any) -> Dict[str, str]:
 
 
 def clear_threadhall_authority_state(config: Dict[str, Any], reason: str) -> None:
+    clear_threadhall_clock_proof()
     stop_loops()
     purge_threadhall_managed_schedules()
     save_threadhall_config({
@@ -972,6 +1144,7 @@ def clear_threadhall_authority_state(config: Dict[str, Any], reason: str) -> Non
         "managed_schedule_hash": "",
         "calendar": [],
         "calendar_defaults": {},
+        "district_time_zone": "",
         "last_sync_at": None,
         "last_error": reason,
     })
@@ -1084,6 +1257,7 @@ def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
             and isinstance(config.get("authority"), dict)
             and config.get("authority") == authority
         )
+        clear_threadhall_clock_proof()
         stop_loops()
         if not same_authority:
             purge_threadhall_managed_schedules()
@@ -1101,6 +1275,7 @@ def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
             "managed_schedule_hash": config.get("managed_schedule_hash", "") if same_authority else "",
             "calendar": config.get("calendar", []) if same_authority else [],
             "calendar_defaults": config.get("calendar_defaults", {}) if same_authority else {},
+            "district_time_zone": config.get("district_time_zone", "") if same_authority else "",
             "paired_at": datetime.now().isoformat(timespec="seconds"),
             "last_sync_at": None,
             "last_error": "",
@@ -1109,7 +1284,24 @@ def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
 
 
 def audio_file_for_key(sound_key: str) -> str:
-    preferred = DEFAULT_AUDIO_KEY_FILES.get((sound_key or "").strip(), "standard-bells.mp3")
+    key = (sound_key or "").strip()
+    preferred = DEFAULT_AUDIO_KEY_FILES.get(key, "standard-bells.mp3")
+    if key in EMERGENCY_SOUND_KEYS:
+        # An emergency key must identify its own readable file, never a library fallback.
+        selected = ensure_audio_exists(preferred)
+        try:
+            with audio_path(selected).open("rb") as audio:
+                if not audio.read(1):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Selected emergency sound file is unreadable",
+                    )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Selected emergency sound file is unreadable",
+            ) from exc
+        return selected
     try:
         return ensure_audio_exists(preferred)
     except HTTPException:
@@ -1373,6 +1565,14 @@ def run_threadhall_command(command: Dict[str, Any]) -> str:
         or emergency_action
         or ("emergency" if command_type == "EMERGENCY_ALERT" else "test")
     )
+    if (
+        (emergency_action or command_type == "EMERGENCY_ALERT")
+        and sound_key.strip() not in EMERGENCY_SOUND_KEYS
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Emergency command requires an emergency sound key",
+        )
     sound_file = audio_file_for_key(sound_key)
     trigger_options: Dict[str, Any] = {"loop": bool(payload.get("loop", False))}
     if "output_keys" in payload:
@@ -1403,19 +1603,27 @@ def acknowledge_threadhall_command(
 
 
 def load_threadhall_command_history() -> Dict[str, Dict[str, Any]]:
-    if (
-        not THREADHALL_COMMAND_HISTORY_FILE.exists()
-        and LEGACY_THREADHALL_COMMAND_HISTORY_FILE.exists()
+    # A retired history file can be stale after an earlier migration. If the
+    # canonical ledger disappears, never replace it with that older copy.
+    return read_threadhall_command_history_file(THREADHALL_COMMAND_HISTORY_FILE)
+
+
+def read_threadhall_command_history_file(path: Path) -> Dict[str, Dict[str, Any]]:
+    detail = (
+        "Threadhall command history is unavailable or invalid; physical commands "
+        "are paused pending operator review."
+    )
+    try:
+        with path.open() as history_file:
+            raw = json.load(history_file)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail=detail) from exc
+    if not isinstance(raw, dict) or any(
+        not command_id or not isinstance(outcome, dict) or not outcome
+        for command_id, outcome in raw.items()
     ):
-        migrated = read_json(LEGACY_THREADHALL_COMMAND_HISTORY_FILE, {})
-        if isinstance(migrated, dict):
-            write_json(THREADHALL_COMMAND_HISTORY_FILE, migrated)
-            try:
-                THREADHALL_COMMAND_HISTORY_FILE.chmod(0o600)
-            except OSError:
-                pass
-    raw = read_json(THREADHALL_COMMAND_HISTORY_FILE, {})
-    return raw if isinstance(raw, dict) else {}
+        raise HTTPException(status_code=503, detail=detail)
+    return raw
 
 
 def save_threadhall_command_history(history: Dict[str, Dict[str, Any]]) -> None:
@@ -1601,13 +1809,122 @@ def deliver_threadhall_outcome(
         return str(getattr(exc, "detail", exc))
 
 
-def sync_threadhall_once() -> Dict[str, Any]:
+def threadhall_connection_identity(config: Dict[str, Any]) -> Tuple[str, ...]:
+    authority = stored_threadhall_authority(config.get("authority")) or {}
+    return (
+        str(bool(config.get("enabled"))),
+        str(config.get("base_url") or ""),
+        str(config.get("token") or ""),
+        str(config.get("device_uuid") or ""),
+        str(authority.get("district_id") or ""),
+        str(authority.get("school_id") or ""),
+        str(authority.get("device_id") or ""),
+    )
+
+
+def sync_threadhall_once(*, acknowledgements_in_background: bool = False) -> Dict[str, Any]:
+    # Serialize response application, while leaving the integration lock free
+    # during HTTP and acknowledgement retries used by minute dispatch.
+    with threadhall_sync_request_lock:
+        status, config, identity, acknowledgements = _sync_threadhall_once_before_acks()
+    if config is None:
+        return status
+
+    if acknowledgements_in_background:
+        # Keep the poll thread available for the next command batch even when
+        # acknowledgement HTTP is slow. Only one worker may retry at a time.
+        if acknowledgements and threadhall_ack_worker_lock.acquire(blocking=False):
+            worker = threading.Thread(
+                target=_deliver_threadhall_ack_batch_in_worker,
+                args=(status, config, identity, acknowledgements),
+                daemon=True,
+            )
+            try:
+                worker.start()
+            except Exception:
+                threadhall_ack_worker_lock.release()
+                raise
+        return status
+
+    return _deliver_threadhall_ack_batch(status, config, identity, acknowledgements)
+
+
+def _deliver_threadhall_ack_batch_in_worker(
+    status: Dict[str, Any],
+    config: Dict[str, Any],
+    identity: Tuple[str, ...],
+    acknowledgements: List[Tuple[str, Dict[str, Any]]],
+) -> None:
+    try:
+        _deliver_threadhall_ack_batch(status, config, identity, acknowledgements)
+    except Exception as exc:
+        with threadhall_integration_lock:
+            if threadhall_connection_identity(load_threadhall_config()) == identity:
+                save_threadhall_config({"last_error": str(getattr(exc, "detail", exc))})
+    finally:
+        threadhall_ack_worker_lock.release()
+
+
+def _deliver_threadhall_ack_batch(
+    status: Dict[str, Any],
+    config: Dict[str, Any],
+    identity: Tuple[str, ...],
+    acknowledgements: List[Tuple[str, Dict[str, Any]]],
+) -> Dict[str, Any]:
+    errors: List[str] = []
+    acknowledged: List[Tuple[str, Dict[str, Any]]] = []
+    for command_id, outcome in acknowledgements:
+        with threadhall_integration_lock:
+            if threadhall_connection_identity(load_threadhall_config()) != identity:
+                return safe_threadhall_status()
+        error = deliver_threadhall_outcome(config, command_id, outcome)
+        if error:
+            errors.append(error)
+        else:
+            acknowledged.append((command_id, outcome))
+
+    with threadhall_integration_lock:
+        if threadhall_connection_identity(load_threadhall_config()) != identity:
+            return safe_threadhall_status()
+        history = load_threadhall_command_history()
+        changed = False
+        for command_id, outcome in acknowledged:
+            current = history.get(command_id)
+            if not isinstance(current, dict):
+                continue
+            if all(
+                current.get(key) == outcome.get(key)
+                for key in ("status", "summary", "detail", "occurred_at")
+            ):
+                current["pending_ack"] = False
+                changed = True
+        if changed:
+            save_threadhall_command_history(history)
+        if errors:
+            save_threadhall_config({"last_error": errors[-1]})
+        return {
+            **status,
+            **safe_threadhall_status(),
+            "pending_acknowledgements": len(
+                [entry for entry in history.values() if entry.get("pending_ack") is True]
+            ),
+        }
+
+
+def _sync_threadhall_once_before_acks() -> Tuple[
+    Dict[str, Any],
+    Optional[Dict[str, Any]],
+    Tuple[str, ...],
+    List[Tuple[str, Dict[str, Any]]],
+]:
+    global threadhall_ack_retry_cursor
     with threadhall_integration_lock:
         config = load_threadhall_config()
         if not config.get("enabled") or not config.get("token") or not config.get("base_url"):
-            return safe_threadhall_status()
+            return safe_threadhall_status(), None, (), []
         authority = stored_threadhall_authority(config.get("authority"))
         if not authority:
+            clear_threadhall_clock_proof()
             stop_loops()
             purge_threadhall_managed_schedules()
             save_threadhall_config({
@@ -1626,15 +1943,36 @@ def sync_threadhall_once() -> Dict[str, Any]:
                 status_code=409,
                 detail="Re-pair with Threadhall before synchronizing",
             )
-        response = threadhall_request(
-            config,
-            "api/pibells/v1/sync",
-            method="POST",
-            payload=threadhall_sync_payload(config),
-        )
+        # An offered physical command may already have executed. Never accept
+        # another offer until its local outcome ledger is known to be readable.
+        load_threadhall_command_history()
+        identity = threadhall_connection_identity(config)
+    # Controller probes and sync HTTP may wait on devices or the network.
+    # Let minute dispatch and pair/unpair proceed while those calls run.
+    payload = threadhall_sync_payload(config)
+    with threadhall_integration_lock:
+        if threadhall_connection_identity(load_threadhall_config()) != identity:
+            return safe_threadhall_status(), None, (), []
+    request_started_utc = datetime.now(timezone.utc)
+    request_started_monotonic = time.monotonic()
+    response = threadhall_request(
+        config,
+        "api/pibells/v1/sync",
+        method="POST",
+        payload=payload,
+    )
+    request_ended_monotonic = time.monotonic()
+    request_ended_utc = datetime.now(timezone.utc)
+    with threadhall_integration_lock:
+        current_config = load_threadhall_config()
+        if threadhall_connection_identity(current_config) != identity:
+            # An earlier authority's response cannot apply after pair/unpair.
+            return safe_threadhall_status(), None, (), []
+        config = current_config
         data = response.get("data") if isinstance(response.get("data"), dict) else response
         response_device = data.get("device") if isinstance(data.get("device"), dict) else {}
         if response_device.get("id") != authority["device_id"]:
+            clear_threadhall_clock_proof()
             stop_loops()
             purge_threadhall_managed_schedules()
             save_threadhall_config({
@@ -1650,6 +1988,7 @@ def sync_threadhall_once() -> Dict[str, Any]:
             })
             save_threadhall_command_history({})
             raise HTTPException(status_code=409, detail="Threadhall pairing authority changed")
+        clear_threadhall_clock_proof()
         raw_schedules = data.get("schedules")
         schedules_supplied = isinstance(raw_schedules, list)
         if schedules_supplied and any(not isinstance(item, dict) for item in raw_schedules):
@@ -1705,24 +2044,15 @@ def sync_threadhall_once() -> Dict[str, Any]:
             schedule_updates["managed_schedule_hash"] = managed_schedule_state_hash()
             config = save_threadhall_config(schedule_updates)
         history = load_threadhall_command_history()
-        acknowledgement_errors: List[str] = []
-        for command_id, pending in history.items():
-            if not isinstance(pending, dict) or pending.get("pending_ack") is not True:
-                continue
-            error = deliver_threadhall_outcome(config, command_id, pending)
-            if error:
-                acknowledgement_errors.append(error)
-        save_threadhall_command_history(history)
+        new_command_ids: List[str] = []
+        reoffered_command_ids: List[str] = []
         for command in data.get("commands", []):
             if not isinstance(command, dict) or "id" not in command:
                 continue
             command_id = str(command["id"])
             previous = history.get(command_id)
             if previous:
-                error = deliver_threadhall_outcome(config, command_id, previous)
-                if error:
-                    acknowledgement_errors.append(error)
-                save_threadhall_command_history(history)
+                reoffered_command_ids.append(command_id)
                 continue
             occurred_at = datetime.now(timezone.utc).isoformat()
             detail: Dict[str, Any] = {}
@@ -1766,24 +2096,56 @@ def sync_threadhall_once() -> Dict[str, Any]:
                     }
             history[command_id] = outcome
             save_threadhall_command_history(history)
-            error = deliver_threadhall_outcome(config, command_id, outcome)
-            if error:
-                acknowledgement_errors.append(error)
-            save_threadhall_command_history(history)
+            new_command_ids.append(command_id)
+        older_pending_ids = [
+            command_id
+            for command_id, outcome in history.items()
+            if isinstance(outcome, dict)
+            and outcome.get("pending_ack") is True
+            and command_id not in new_command_ids
+        ]
+        if older_pending_ids:
+            offset = threadhall_ack_retry_cursor % len(older_pending_ids)
+            older_pending_ids = older_pending_ids[offset:] + older_pending_ids[:offset]
+        selected_ids = new_command_ids[:THREADHALL_ACK_ATTEMPTS_PER_SYNC]
+        remaining = THREADHALL_ACK_ATTEMPTS_PER_SYNC - len(selected_ids)
+        selected_older = older_pending_ids[:remaining]
+        threadhall_ack_retry_cursor += len(selected_older)
+        selected_ids.extend(selected_older)
+        selected_ids.extend(
+            command_id
+            for command_id in reoffered_command_ids
+            if command_id not in selected_ids
+            and command_id not in older_pending_ids
+        )
+        selected_ids = selected_ids[:THREADHALL_ACK_ATTEMPTS_PER_SYNC]
+        acknowledgements = [
+            (command_id, dict(history[command_id]))
+            for command_id in selected_ids
+            if isinstance(history.get(command_id), dict)
+        ]
+        record_threadhall_clock_sample(
+            config,
+            data.get("server_time"),
+            request_started_utc,
+            request_ended_utc,
+            request_started_monotonic,
+            request_ended_monotonic,
+        )
         sync_updates: Dict[str, Any] = {
             "enabled": True,
             "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
             "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
             "schedule_revision": schedule_revision or config.get("schedule_revision", ""),
             "last_sync_at": datetime.now().isoformat(timespec="seconds"),
-            "last_error": acknowledgement_errors[-1] if acknowledgement_errors else "",
+            "last_error": "",
         }
         if calendar_supplied:
             sync_updates["calendar"] = calendar
         if calendar_defaults_supplied:
             sync_updates["calendar_defaults"] = calendar_defaults
         saved = save_threadhall_config(sync_updates)
-        return {
+        status = {
             **safe_threadhall_status(),
             "received_commands": len(data.get("commands", [])),
             "received_schedules": received_schedules,
@@ -1792,22 +2154,30 @@ def sync_threadhall_once() -> Dict[str, Any]:
             ),
             "poll_seconds": saved.get("poll_seconds"),
         }
+        return status, config, identity, acknowledgements
 
 
 def threadhall_sync_loop() -> None:
     while True:
         delay = THREADHALL_DEFAULT_POLL_SECONDS
+        with threadhall_integration_lock:
+            attempted_identity = threadhall_connection_identity(load_threadhall_config())
         try:
-            status = sync_threadhall_once()
+            status = sync_threadhall_once(acknowledgements_in_background=True)
             delay = int(status.get("poll_seconds") or delay)
         except Exception as exc:
-            config = load_threadhall_config()
-            if config.get("enabled") and config.get("token"):
-                save_threadhall_config({
-                    "last_error": str(getattr(exc, "detail", exc)),
-                    "last_sync_at": config.get("last_sync_at"),
-                })
-            delay = int(config.get("poll_seconds") or delay)
+            with threadhall_integration_lock:
+                config = load_threadhall_config()
+                if (
+                    config.get("enabled")
+                    and config.get("token")
+                    and threadhall_connection_identity(config) == attempted_identity
+                ):
+                    save_threadhall_config({
+                        "last_error": str(getattr(exc, "detail", exc)),
+                        "last_sync_at": config.get("last_sync_at"),
+                    })
+                delay = int(config.get("poll_seconds") or delay)
         time.sleep(max(10, min(300, delay)))
 
 
@@ -2500,7 +2870,26 @@ def trigger_bell(
 
 
 def dispatch_due_events(now: Optional[datetime] = None) -> None:
-    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    config = load_threadhall_config()
+    active = load_all_schedules().get("active")
+    if threadhall_manages_current_schedule(config, active):
+        if not managed_schedule_clock_status(config)["ready"]:
+            return
+        _, district_zone, _ = configured_district_time_zone(config)
+        if district_zone is None:
+            return
+        if now is None:
+            now = datetime.now(timezone.utc).astimezone(district_zone)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=district_zone)
+        else:
+            now = now.astimezone(district_zone)
+        # A fall-back hour occurs twice. Execute its wall-clock bell only once.
+        if now.fold == 1 and now.utcoffset() != now.replace(fold=0).utcoffset():
+            return
+    else:
+        now = now or datetime.now()
+    now = now.replace(second=0, microsecond=0)
     weekday = now.weekday()
     for event in load_schedule(now):
         if not (
@@ -2627,6 +3016,7 @@ def pair_threadhall_device(body: ThreadhallPairRequest):
 def unpair_threadhall() -> Dict[str, Any]:
     with threadhall_integration_lock:
         config = load_threadhall_config()
+        clear_threadhall_clock_proof()
         stop_loops()
         purge_threadhall_managed_schedules()
         save_threadhall_config({
@@ -2640,6 +3030,7 @@ def unpair_threadhall() -> Dict[str, Any]:
             "managed_schedule_hash": "",
             "calendar": [],
             "calendar_defaults": {},
+            "district_time_zone": "",
             "last_sync_at": None,
             "last_error": "",
         })
@@ -2962,7 +3353,23 @@ def next_event_payload(
     *,
     now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
-    now = now or datetime.now()
+    config = load_threadhall_config()
+    active = load_all_schedules().get("active")
+    managed = threadhall_manages_current_schedule(config, active)
+    if managed:
+        if not managed_schedule_clock_status(config)["ready"]:
+            return None
+        _, district_zone, _ = configured_district_time_zone(config)
+        if district_zone is None:
+            return None
+        if now is None:
+            now = datetime.now(timezone.utc).astimezone(district_zone)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=district_zone)
+        else:
+            now = now.astimezone(district_zone)
+    else:
+        now = now or datetime.now()
     audio_names = {audio.file: audio.name for audio in list_audio()}
     candidates: List[Tuple[datetime, ScheduleEntry]] = []
     for days_ahead in range(8):
@@ -2975,11 +3382,29 @@ def next_event_payload(
             if not entry.enabled or entry.day != target_day:
                 continue
             candidate = datetime.combine(target_date, entry.time).replace(tzinfo=now.tzinfo)
-            if candidate > now:
+            if managed:
+                round_trip = candidate.astimezone(timezone.utc).astimezone(now.tzinfo)
+                if round_trip.replace(tzinfo=None) != datetime.combine(target_date, entry.time):
+                    continue
+                future = candidate.astimezone(timezone.utc) > now.astimezone(timezone.utc)
+            else:
+                future = candidate > now
+            if future:
                 candidates.append((candidate, entry))
     if not candidates:
         return None
-    candidate, entry = sorted(candidates, key=lambda item: item[0])[0]
+    candidate, entry = min(
+        candidates,
+        key=(
+            (lambda item: item[0].astimezone(timezone.utc))
+            if managed else (lambda item: item[0])
+        ),
+    )
+    until_event = (
+        candidate.astimezone(timezone.utc) - now.astimezone(timezone.utc)
+        if managed
+        else candidate - now
+    )
     return {
         "id": entry.id,
         "label": entry.label,
@@ -2989,7 +3414,7 @@ def next_event_payload(
         "sound_file": entry.sound_file,
         "sound_name": audio_names.get(entry.sound_file, Path(entry.sound_file).stem),
         "output_keys": entry.output_keys,
-        "in_minutes": max(0, int((candidate - now).total_seconds() // 60)),
+        "in_minutes": max(0, int(until_event.total_seconds() // 60)),
     }
 
 
@@ -3002,6 +3427,7 @@ def dashboard():
     return {
         "active_schedule": schedules.get("active"),
         "effective_schedule": effective_schedule,
+        "schedule_clock": managed_schedule_clock_status(),
         "schedule_options": list(schedules.get("schedules", {}).keys()),
         "event_count": len(entries),
         "enabled_event_count": len([entry for entry in entries if entry.enabled]),

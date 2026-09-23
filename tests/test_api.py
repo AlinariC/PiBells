@@ -1,6 +1,7 @@
 import importlib
 import sys
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,18 @@ def save_threadhall_connection(module, overrides):
         },
     }
     config.update(overrides)
-    return module.save_threadhall_config(config)
+    saved = module.save_threadhall_config(config)
+    if not module.THREADHALL_COMMAND_HISTORY_FILE.exists():
+        module.save_threadhall_command_history({})
+    return saved
+
+
+def verify_managed_schedule_clock(module):
+    instant = datetime.now(timezone.utc)
+    tick = module.time.monotonic()
+    module.record_threadhall_clock_sample(
+        module.load_threadhall_config(), instant.isoformat(), instant, instant, tick, tick
+    )
 
 
 @pytest.fixture()
@@ -1392,7 +1404,7 @@ def test_sync_persists_managed_calendar_defaults_with_revision_and_cleans_empty_
             "calendar": [],
             "calendar_defaults": {
                 "managed": True,
-                "weekday_schedule_name": "  District   Weekday  ",
+                "weekday_schedule_name": None,
                 "weekend_schedule_name": None,
             },
             "commands": [],
@@ -1422,7 +1434,7 @@ def test_sync_persists_managed_calendar_defaults_with_revision_and_cleans_empty_
     assert first_config["schedule_revision"] == "revision-policy-2"
     assert first_config["calendar_defaults"] == {
         "managed": True,
-        "weekday_schedule_name": "District Weekday",
+        "weekday_schedule_name": None,
         "weekend_schedule_name": None,
     }
     assert first_config["managed_schedule_hash"] == module.managed_schedule_state_hash()
@@ -1463,6 +1475,7 @@ def test_sync_rejects_invalid_calendar_defaults(module, monkeypatch):
 def test_next_event_rechecks_managed_calendar_for_each_future_date(module):
     save_managed_calendar_schedules(module)
     save_threadhall_connection(module, {
+        "district_time_zone": "America/Phoenix",
         "calendar_defaults": {
             "managed": True,
             "weekday_schedule_name": "District Weekday",
@@ -1476,6 +1489,7 @@ def test_next_event_rechecks_managed_calendar_for_each_future_date(module):
             }
         ],
     })
+    verify_managed_schedule_clock(module)
     now = datetime(2026, 8, 7, 16, 0)
     today_entries = module.load_schedule(now)
 
@@ -1485,6 +1499,184 @@ def test_next_event_rechecks_managed_calendar_for_each_future_date(module):
     assert next_event["id"] == "weekday-tuesday"
     assert next_event["day_name"] == "Tuesday"
     assert next_event["time"] == "08:10"
+
+
+def prepare_managed_dispatch(module, *, zone="America/Phoenix", day=0, bell_time="08:10"):
+    module.save_all_schedules({
+        "active": "Threadhall - Regular",
+        "schedules": {
+            "Threadhall - Regular": [{
+                "id": "managed-bell",
+                "day": day,
+                "time": bell_time,
+                "sound_file": "bell.mp3",
+                "label": "Managed bell",
+                "enabled": True,
+            }],
+        },
+    })
+    return save_threadhall_connection(module, {
+        "district_time_zone": zone,
+        "calendar_defaults": {
+            "managed": True,
+            "weekday_schedule_name": "Regular",
+            "weekend_schedule_name": "Regular",
+        },
+    })
+
+
+def test_managed_dispatch_requires_configured_zone_and_fresh_server_clock(module, monkeypatch):
+    prepare_managed_dispatch(module, zone="")
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+    monday_utc = datetime(2026, 8, 3, 15, 10, tzinfo=timezone.utc)
+
+    module.dispatch_due_events(monday_utc)
+    assert module.dashboard()["schedule_clock"]["reason"] == "district_time_zone_missing"
+    assert played == []
+
+    module.save_threadhall_config({"district_time_zone": "Bad/Zone"})
+    module.dispatch_due_events(monday_utc)
+    assert module.dashboard()["schedule_clock"]["reason"] == "district_time_zone_invalid"
+    assert played == []
+
+    module.save_threadhall_config({"district_time_zone": "America/Phoenix"})
+    module.dispatch_due_events(monday_utc)
+    assert module.dashboard()["schedule_clock"]["reason"] == "server_clock_not_verified"
+    assert played == []
+
+
+def test_invalid_environment_zone_overrides_file_and_blocks_managed_bells(module, monkeypatch):
+    prepare_managed_dispatch(module)
+    verify_managed_schedule_clock(module)
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+    monkeypatch.setenv("PIBELLS_DISTRICT_TIME_ZONE", "Bad/Zone")
+
+    module.dispatch_due_events(datetime(2026, 8, 3, 15, 10, tzinfo=timezone.utc))
+
+    assert module.managed_schedule_clock_status()["reason"] == "district_time_zone_invalid"
+    assert played == []
+
+
+def test_managed_dispatch_converts_utc_to_district_wall_time_and_observes_closure(module, monkeypatch):
+    prepare_managed_dispatch(module)
+    verify_managed_schedule_clock(module)
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+
+    module.dispatch_due_events(datetime(2026, 8, 3, 8, 10, tzinfo=timezone.utc))
+    assert played == []  # 01:10 in Phoenix, despite matching the UTC wall hour.
+    module.dispatch_due_events(datetime(2026, 8, 3, 15, 10, tzinfo=timezone.utc))
+    assert played == [("bell.mp3",)]
+
+    module.save_threadhall_config({"calendar": [{
+        "date": "2026-08-03",
+        "instructional": False,
+        "schedule_name": "Regular",
+    }]})
+    module.dispatch_due_events(datetime(2026, 8, 3, 15, 10, tzinfo=timezone.utc))
+    assert played == [("bell.mp3",)]
+
+
+def test_managed_calendar_uses_district_date_when_utc_is_next_day(module, monkeypatch):
+    prepare_managed_dispatch(module, bell_time="23:10")
+    verify_managed_schedule_clock(module)
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+    tuesday_utc = datetime(2026, 8, 4, 6, 10, tzinfo=timezone.utc)
+    module.save_threadhall_config({"calendar": [{
+        "date": "2026-08-04",
+        "instructional": False,
+        "schedule_name": "Regular",
+    }]})
+
+    module.dispatch_due_events(tuesday_utc)
+    assert played == [("bell.mp3",)]  # Still Monday, August 3 in Phoenix.
+
+    module.save_threadhall_config({"calendar": [{
+        "date": "2026-08-03",
+        "instructional": False,
+        "schedule_name": "Regular",
+    }]})
+    module.dispatch_due_events(tuesday_utc)
+    assert played == [("bell.mp3",)]
+
+
+def test_managed_dispatch_refuses_skew_stale_samples_and_zone_changes(module, monkeypatch):
+    prepare_managed_dispatch(module)
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+    monday_utc = datetime(2026, 8, 3, 15, 10, tzinfo=timezone.utc)
+    instant = datetime.now(timezone.utc)
+    tick = module.time.monotonic()
+    module.record_threadhall_clock_sample(
+        module.load_threadhall_config(),
+        (instant + timedelta(minutes=2)).isoformat(),
+        instant, instant, tick, tick,
+    )
+    assert module.managed_schedule_clock_status()["reason"] == "controller_clock_skew"
+    module.dispatch_due_events(monday_utc)
+    assert played == []
+
+    old_instant = instant - timedelta(seconds=121)
+    old_tick = tick - 121
+    module.record_threadhall_clock_sample(
+        module.load_threadhall_config(), old_instant.isoformat(),
+        old_instant, old_instant, old_tick, old_tick,
+    )
+    assert module.managed_schedule_clock_status()["reason"] == "server_clock_sample_stale"
+    module.dispatch_due_events(monday_utc)
+    assert played == []
+
+    verify_managed_schedule_clock(module)
+    assert module.managed_schedule_clock_status()["ready"] is True
+    proof = module.threadhall_clock_proof
+    jumped = module.managed_schedule_clock_status(
+        now_utc=proof["verified_at_utc"] + timedelta(seconds=10),
+        now_monotonic=proof["verified_at_monotonic"] + 1,
+    )
+    assert jumped["reason"] == "controller_clock_changed"
+    assert jumped["ready"] is False
+    module.save_threadhall_config({"district_time_zone": "America/Denver"})
+    assert module.managed_schedule_clock_status()["ready"] is False
+    module.dispatch_due_events(monday_utc)
+    assert played == []
+
+
+def test_managed_dispatch_plays_once_in_repeated_fall_back_hour(module, monkeypatch):
+    prepare_managed_dispatch(module, zone="America/Denver", day=6, bell_time="01:30")
+    verify_managed_schedule_clock(module)
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+
+    module.dispatch_due_events(datetime(2026, 11, 1, 7, 30, tzinfo=timezone.utc))
+    module.dispatch_due_events(datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc))
+
+    assert played == [("bell.mp3",)]
+
+
+def test_threadhall_sync_server_time_grants_and_revokes_managed_dispatch(module, monkeypatch):
+    prepare_managed_dispatch(module)
+    response_numbers = iter((1, 2))
+
+    def fake_request(*args, **kwargs):
+        response = {"device": {"id": "device-1"}, "commands": []}
+        if next(response_numbers) == 1:
+            response["server_time"] = datetime.now(timezone.utc).isoformat()
+        return response
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+
+    first = module.sync_threadhall_once()
+    assert first["schedule_clock"]["ready"] is True
+    assert first["schedule_clock"]["district_time_zone"] == "America/Phoenix"
+    assert first["schedule_clock"]["district_utc_offset_minutes"] == -420
+    assert first["schedule_clock"]["clock_skew_bound_seconds"] is not None
+
+    second = module.sync_threadhall_once()
+    assert second["schedule_clock"]["ready"] is False
+    assert second["schedule_clock"]["reason"] == "server_time_missing"
 
 
 def test_sync_explicit_empty_calendar_clears_but_absence_preserves(module, monkeypatch):
@@ -1626,6 +1818,85 @@ def test_threadhall_records_unknown_outcome_before_physical_execution(
     assert module.load_threadhall_command_history()["interrupted-command"]["pending_ack"] is False
 
 
+@pytest.mark.parametrize(
+    "damage",
+    ["missing", "missing_with_stale_legacy", "invalid_json", "empty_outcome", "unreadable"],
+)
+def test_threadhall_restart_refuses_commands_when_outcome_history_is_unavailable(
+    module,
+    monkeypatch,
+    damage,
+):
+    save_threadhall_connection(module, {})
+    attempts = []
+    command = {
+        "id": "possibly-played-command",
+        "type": "PLAY_SOUND",
+        "payload": {"sound_key": "passing"},
+    }
+
+    def first_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {"device": {"id": "device-1"}, "commands": [command]}
+        pytest.fail("The interrupted command must not be acknowledged yet")
+
+    def interrupted_execution(offered):
+        attempts.append(offered["id"])
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(module, "threadhall_request", first_request)
+    monkeypatch.setattr(module, "run_threadhall_command", interrupted_execution)
+    with pytest.raises(KeyboardInterrupt):
+        module.sync_threadhall_once()
+
+    history_path = module.THREADHALL_COMMAND_HISTORY_FILE
+    assert module.load_threadhall_command_history()[command["id"]]["detail"] == {
+        "execution_outcome_unknown": True
+    }
+    if damage == "missing_with_stale_legacy":
+        module.LEGACY_THREADHALL_COMMAND_HISTORY_FILE.write_text("{}")
+    if damage in {"missing", "missing_with_stale_legacy"}:
+        history_path.unlink()
+    elif damage == "invalid_json":
+        history_path.write_text("{")
+    elif damage == "empty_outcome":
+        history_path.write_text('{"possibly-played-command": {}}')
+    damaged_bytes = history_path.read_bytes() if history_path.exists() else None
+
+    restarted = importlib.reload(module)
+    monkeypatch.setattr(
+        restarted,
+        "threadhall_request",
+        lambda *args, **kwargs: pytest.fail("Unsafe history must stop sync before network"),
+    )
+    monkeypatch.setattr(
+        restarted,
+        "run_threadhall_command",
+        lambda *args, **kwargs: pytest.fail("Physical command must not replay"),
+    )
+
+    if damage == "unreadable":
+        original_open = Path.open
+
+        def deny_history_read(path, *args, **kwargs):
+            if path == history_path:
+                raise PermissionError("simulated unreadable history")
+            return original_open(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "open", deny_history_read)
+            with pytest.raises(restarted.HTTPException) as exc_info:
+                restarted.sync_threadhall_once()
+    else:
+        with pytest.raises(restarted.HTTPException) as exc_info:
+            restarted.sync_threadhall_once()
+
+    assert exc_info.value.status_code == 503
+    assert "physical commands are paused" in str(exc_info.value.detail)
+    assert attempts == [command["id"]]
+    assert (history_path.read_bytes() if history_path.exists() else None) == damaged_bytes
+
+
 def test_threadhall_retries_a_durable_outcome_after_the_command_is_withdrawn(
     module,
     monkeypatch,
@@ -1678,6 +1949,207 @@ def test_threadhall_retries_a_durable_outcome_after_the_command_is_withdrawn(
     assert acknowledgement_attempts[1] == acknowledgement_attempts[0]
 
 
+def test_sync_http_wait_does_not_block_minute_dispatch(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    event = module.ScheduleEntry(
+        id="minute-bell",
+        day=0,
+        time="08:10",
+        sound_file="bell.mp3",
+    )
+    module.save_schedule([event])
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda sound_file, **kwargs: played.append(sound_file))
+    request_started = threading.Event()
+    release_request = threading.Event()
+    dispatch_finished = threading.Event()
+    errors = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/sync"
+        request_started.set()
+        assert release_request.wait(3)
+        return {"device": {"id": "device-1"}, "commands": []}
+
+    def run_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    sync_worker = threading.Thread(target=run_sync, daemon=True)
+    sync_worker.start()
+    try:
+        assert request_started.wait(1)
+        dispatch_worker = threading.Thread(
+            target=lambda: (module.dispatch_due_events(datetime(2026, 8, 3, 8, 10)), dispatch_finished.set()),
+            daemon=True,
+        )
+        dispatch_worker.start()
+        assert dispatch_finished.wait(1), "minute dispatch waited for Threadhall HTTP"
+        assert played == ["bell.mp3"]
+    finally:
+        release_request.set()
+        sync_worker.join(timeout=2)
+    assert not sync_worker.is_alive()
+    assert errors == []
+
+
+def test_pending_ack_retry_cannot_delay_remote_stop_or_schedule_read(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    module.save_threadhall_command_history({
+        "prior-command": {
+            "status": "failed",
+            "summary": "Prior result",
+            "detail": {},
+            "occurred_at": "2026-08-03T08:00:00+00:00",
+            "pending_ack": True,
+        },
+    })
+    stopped = []
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    ack_started = threading.Event()
+    release_ack = threading.Event()
+    schedule_read_finished = threading.Event()
+    errors = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "device": {"id": "device-1"},
+                "commands": [{"id": "stop-now", "type": "STOP_AUDIO", "payload": {}}],
+            }
+        if path == "api/pibells/v1/commands/prior-command/ack":
+            ack_started.set()
+            assert release_ack.wait(3)
+            return {"ok": True}
+        if path == "api/pibells/v1/commands/stop-now/ack":
+            return {"ok": True}
+        raise AssertionError(path)
+
+    def run_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    sync_worker = threading.Thread(target=run_sync, daemon=True)
+    sync_worker.start()
+    try:
+        assert ack_started.wait(1)
+        assert stopped == [True], "STOP must execute before old acknowledgement retry"
+        schedule_worker = threading.Thread(
+            target=lambda: (module.resolve_effective_schedule(), schedule_read_finished.set()),
+            daemon=True,
+        )
+        schedule_worker.start()
+        assert schedule_read_finished.wait(1), "schedule read waited for acknowledgement HTTP"
+    finally:
+        release_ack.set()
+        sync_worker.join(timeout=2)
+    assert not sync_worker.is_alive()
+    assert errors == []
+    history = module.load_threadhall_command_history()
+    assert history["prior-command"]["pending_ack"] is False
+    assert history["stop-now"]["pending_ack"] is False
+
+
+def test_daemon_poll_reaches_later_stop_while_ack_worker_is_waiting(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    module.save_threadhall_command_history({
+        "prior-command": {
+            "status": "failed",
+            "summary": "Prior result",
+            "detail": {},
+            "occurred_at": "2026-08-03T08:00:00+00:00",
+            "pending_ack": True,
+        },
+    })
+    stopped = []
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    ack_started = threading.Event()
+    release_ack = threading.Event()
+    sync_calls = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            sync_calls.append(True)
+            commands = (
+                [{"id": "later-stop", "type": "STOP_AUDIO", "payload": {}}]
+                if len(sync_calls) == 2
+                else []
+            )
+            return {"device": {"id": "device-1"}, "commands": commands}
+        if path == "api/pibells/v1/commands/prior-command/ack":
+            ack_started.set()
+            assert release_ack.wait(3)
+            return {"ok": True}
+        if path == "api/pibells/v1/commands/later-stop/ack":
+            return {"ok": True}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    try:
+        module.sync_threadhall_once(acknowledgements_in_background=True)
+        assert ack_started.wait(1)
+        module.sync_threadhall_once(acknowledgements_in_background=True)
+        assert stopped == [True], "a previous ACK wait must not hold the poll thread"
+    finally:
+        release_ack.set()
+        assert module.threadhall_ack_worker_lock.acquire(timeout=2)
+        module.threadhall_ack_worker_lock.release()
+
+    module.sync_threadhall_once()
+    assert module.load_threadhall_command_history()["later-stop"]["pending_ack"] is False
+    assert stopped == [True]
+
+
+def test_unpair_during_sync_http_discards_stale_stop_command(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    request_started = threading.Event()
+    release_request = threading.Event()
+    unpair_finished = threading.Event()
+    executed = []
+    errors = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/sync"
+        request_started.set()
+        assert release_request.wait(3)
+        return {
+            "device": {"id": "device-1"},
+            "commands": [{"id": "stale-stop", "type": "STOP_AUDIO", "payload": {}}],
+        }
+
+    def run_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: executed.append(command))
+    sync_worker = threading.Thread(target=run_sync, daemon=True)
+    sync_worker.start()
+    try:
+        assert request_started.wait(1)
+        unpair_worker = threading.Thread(
+            target=lambda: (module.unpair_threadhall(), unpair_finished.set()),
+            daemon=True,
+        )
+        unpair_worker.start()
+        assert unpair_finished.wait(1), "unpair waited for Threadhall HTTP"
+    finally:
+        release_request.set()
+        sync_worker.join(timeout=2)
+    assert not sync_worker.is_alive()
+    assert errors == []
+    assert executed == []
+    assert module.load_threadhall_config()["enabled"] is False
+
+
 @pytest.mark.parametrize(
     "action_key",
     ["hold", "secure", "lockdown", "evacuate", "shelter", "medical", "all_clear", "emergency"],
@@ -1723,6 +2195,85 @@ def test_emergency_action_payload_sound_key_takes_precedence(module, monkeypatch
     })
 
     assert played == [("secure.mp3", True, ["10.80.2.44:3030"])]
+
+
+@pytest.mark.parametrize(
+    ("command_type", "payload"),
+    [
+        ("lockdown", {}),
+        ("EMERGENCY_ALERT", {}),
+        ("PLAY_SOUND", {"sound_key": "lockdown"}),
+    ],
+)
+def test_missing_emergency_audio_never_plays_another_file(
+    module, monkeypatch, command_type, payload
+):
+    (module.AUDIO_DIR / "another-sound.mp3").write_bytes(b"unrelated audio")
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+
+    with pytest.raises(module.HTTPException) as exc_info:
+        module.run_threadhall_command({"type": command_type, "payload": payload})
+
+    assert exc_info.value.status_code == 404
+    assert played == []
+
+
+@pytest.mark.parametrize("damage", ["unreadable", "empty"])
+def test_unreadable_emergency_audio_never_plays_another_file(
+    module, monkeypatch, damage
+):
+    selected = module.AUDIO_DIR / "emergency-lockdown.mp3"
+    selected.write_bytes(b"selected audio" if damage == "unreadable" else b"")
+    (module.AUDIO_DIR / "another-sound.mp3").write_bytes(b"unrelated audio")
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+    if damage == "unreadable":
+        original_open = Path.open
+
+        def deny_selected_audio(path, *args, **kwargs):
+            if path == selected:
+                raise PermissionError("simulated unreadable emergency audio")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", deny_selected_audio)
+
+    with pytest.raises(module.HTTPException) as exc_info:
+        module.run_threadhall_command({"type": "lockdown", "payload": {}})
+
+    assert exc_info.value.status_code == 503
+    assert "emergency sound file is unreadable" in str(exc_info.value.detail)
+    assert played == []
+
+
+def test_emergency_command_rejects_non_emergency_sound_key(module, monkeypatch):
+    (module.AUDIO_DIR / "bell-passing-classic.mp3").write_bytes(b"routine audio")
+    played = []
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: played.append(args))
+
+    with pytest.raises(module.HTTPException) as exc_info:
+        module.run_threadhall_command({
+            "type": "EMERGENCY_ALERT",
+            "payload": {"sound_key": "passing"},
+        })
+
+    assert exc_info.value.status_code == 422
+    assert played == []
+
+
+def test_readable_emergency_audio_uses_the_exact_selected_file(module, monkeypatch):
+    (module.AUDIO_DIR / "another-sound.mp3").write_bytes(b"unrelated audio")
+    (module.AUDIO_DIR / "emergency-lockdown.mp3").write_bytes(b"selected audio")
+    played = []
+    monkeypatch.setattr(
+        module,
+        "trigger_bell",
+        lambda sound_file, **kwargs: played.append(sound_file),
+    )
+
+    module.run_threadhall_command({"type": "lockdown", "payload": {}})
+
+    assert played == ["emergency-lockdown.mp3"]
 
 
 def test_threadhall_command_rejects_unsupported_action_type(module, monkeypatch):
