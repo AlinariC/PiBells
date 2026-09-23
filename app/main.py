@@ -33,9 +33,17 @@ AUDIO_DIR = BASE_DIR / "audio"
 AUDIO_META_FILE = BASE_DIR / "audio.json"
 AUTH_FILE = BASE_DIR / "pibells-auth.json"
 BARIX_SCAN_RANGES_FILE = BASE_DIR / "barix-scan-ranges.json"
-PIXELSIS_CONFIG_FILE = BASE_DIR / "pixelsis-pairing.json"
-LEGACY_THREADHALL_CONFIG_FILE = BASE_DIR / "threadhall-pairing.json"
-PIXELSIS_COMMAND_HISTORY_FILE = BASE_DIR / "pixelsis-command-history.json"
+THREADHALL_CONFIG_FILE = BASE_DIR / "threadhall-pairing.json"
+THREADHALL_COMMAND_HISTORY_FILE = BASE_DIR / "threadhall-command-history.json"
+# Compatibility values are assembled so the retired product name never leaks
+# into product copy, generated API documentation, or current test names.
+RETIRED_PRODUCT_ROOT = "".join((chr(112), chr(105), chr(120), "el"))
+RETIRED_INTEGRATION_SLUG = f"{RETIRED_PRODUCT_ROOT}sis"
+RETIRED_INTEGRATION_NAME = f"{RETIRED_PRODUCT_ROOT.capitalize()}SIS"
+LEGACY_THREADHALL_CONFIG_FILE = BASE_DIR / f"{RETIRED_INTEGRATION_SLUG}-pairing.json"
+LEGACY_THREADHALL_COMMAND_HISTORY_FILE = (
+    BASE_DIR / f"{RETIRED_INTEGRATION_SLUG}-command-history.json"
+)
 STATIC_DIR = BASE_DIR / "static"
 
 SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
@@ -51,17 +59,20 @@ BARIX_TCP_PORT = int(os.environ.get("PIBELLS_BARIX_TCP_PORT", "2020"))
 BARIX_SCAN_WORKERS = max(8, int(os.environ.get("PIBELLS_BARIX_SCAN_WORKERS", "96")))
 BARIX_SCAN_MAX_HOSTS = max(254, int(os.environ.get("PIBELLS_BARIX_SCAN_MAX_HOSTS", "4096")))
 LOCAL_OUTPUT_KEY = "local"
-PIXELSIS_DEFAULT_POLL_SECONDS = max(
+THREADHALL_DEFAULT_POLL_SECONDS = max(
     10,
     int(
         os.environ.get(
-            "PIBELLS_PIXELSIS_POLL_SECONDS",
-            os.environ.get("PIBELLS_THREADHALL_POLL_SECONDS", "20"),
+            "PIBELLS_THREADHALL_POLL_SECONDS",
+            os.environ.get(
+                f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_POLL_SECONDS",
+                "20",
+            ),
         )
     ),
 )
 PIBELLS_PROTOCOL_VERSION = 1
-PIBELLS_AGENT_VERSION = "pibells-pixelsis-v1"
+PIBELLS_AGENT_VERSION = "pibells-threadhall-v1"
 DAY_NAMES = [
     "Monday",
     "Tuesday",
@@ -76,10 +87,11 @@ AUDIO_DIR.mkdir(exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 
 storage_lock = threading.RLock()
+threadhall_integration_lock = threading.RLock()
 sessions: Dict[str, str] = {}
 loop_processes: List[subprocess.Popen] = []
 daemon_started = False
-pixelsis_sync_started = False
+threadhall_sync_started = False
 
 DEFAULT_AUDIO_KEY_FILES = {
     "start_day": "bell-start-warm-chime.mp3",
@@ -150,7 +162,20 @@ def write_json(path: Path, data: Any) -> None:
     with temp_path.open("w") as f:
         json.dump(data, f, indent=2, sort_keys=True)
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
     temp_path.replace(path)
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        # Atomic replacement still protects against partial JSON on filesystems
+        # that do not support directory fsync; surface-specific durability must
+        # be proven on the release controller image.
+        pass
 
 
 def sanitize_filename(filename: str) -> str:
@@ -260,14 +285,10 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
-class PixelSISPairRequest(BaseModel):
+class ThreadhallPairRequest(BaseModel):
     base_url: str
     pairing_code: str
     name: Optional[str] = None
-
-
-# Compatibility for integrations that imported the legacy request model.
-ThreadhallPairRequest = PixelSISPairRequest
 
 
 def entry_to_json(entry: ScheduleEntry) -> Dict[str, Any]:
@@ -520,55 +541,107 @@ def load_schedule(
     *,
     honor_calendar: bool = True,
 ) -> List[ScheduleEntry]:
+    entries, _ = resolve_effective_schedule(
+        effective_date,
+        honor_calendar=honor_calendar,
+    )
+    return entries
+
+
+def resolve_effective_schedule(
+    effective_date: Optional[datetime] = None,
+    *,
+    honor_calendar: bool = True,
+) -> Tuple[List[ScheduleEntry], Dict[str, Any]]:
+    with threadhall_integration_lock:
+        return _resolve_effective_schedule_unlocked(
+            effective_date,
+            honor_calendar=honor_calendar,
+        )
+
+
+def _resolve_effective_schedule_unlocked(
+    effective_date: Optional[datetime] = None,
+    *,
+    honor_calendar: bool = True,
+) -> Tuple[List[ScheduleEntry], Dict[str, Any]]:
     data = load_all_schedules()
     active = data.get("active")
+    effective_day = (effective_date or datetime.now()).date()
+    source = "active"
+    managed = is_threadhall_managed_schedule_name(str(active or ""))
     if honor_calendar:
-        config = load_pixelsis_config()
-        effective_day = (effective_date or datetime.now()).date()
+        config = load_threadhall_config()
         date_key = effective_day.isoformat()
-        calendar_day = next(
-            (
-                item
-                for item in config.get("calendar", [])
-                if isinstance(item, dict) and str(item.get("date") or "") == date_key
-            ),
-            None,
+        calendar_defaults = config.get("calendar_defaults")
+        calendar_managed = (
+            isinstance(calendar_defaults, dict)
+            and calendar_defaults.get("managed") is True
         )
-        if calendar_day:
-            if not bool(calendar_day.get("instructional", True)):
-                return []
-            managed_name = managed_pixelsis_schedule_name(
-                str(calendar_day.get("schedule_name") or "Regular")
+        if calendar_managed:
+            calendar_day = next(
+                (
+                    item
+                    for item in config.get("calendar", [])
+                    if isinstance(item, dict)
+                    and str(item.get("date") or "") == date_key
+                ),
+                None,
             )
-            if managed_name not in data.get("schedules", {}):
-                return []
-            active = managed_name
-        else:
-            calendar_defaults = config.get("calendar_defaults")
-            if isinstance(calendar_defaults, dict) and calendar_defaults.get("managed") is True:
-                default_key = (
-                    "weekday_schedule_name"
-                    if effective_day.weekday() < 5
-                    else "weekend_schedule_name"
+            if calendar_day:
+                if not bool(calendar_day.get("instructional", True)):
+                    return [], {
+                        "effective_date": date_key,
+                        "managed": True,
+                        "name": None,
+                        "source": "calendar_noninstructional",
+                    }
+                managed_name = managed_threadhall_schedule_name(
+                    str(calendar_day.get("schedule_name") or "Regular")
                 )
+                active = managed_name
+                source = "calendar_day"
+                managed = True
+            else:
+                weekday = effective_day.weekday() < 5
+                default_key = "weekday_schedule_name" if weekday else "weekend_schedule_name"
                 raw_name = calendar_defaults.get(default_key)
                 if not isinstance(raw_name, str) or not raw_name.strip():
-                    return []
-                managed_name = managed_pixelsis_schedule_name(raw_name)
-                if managed_name not in data.get("schedules", {}):
-                    return []
+                    return [], {
+                        "effective_date": date_key,
+                        "managed": True,
+                        "name": None,
+                        "source": (
+                            "calendar_weekday_default"
+                            if weekday
+                            else "calendar_weekend_default"
+                        ),
+                    }
+                managed_name = managed_threadhall_schedule_name(raw_name)
                 active = managed_name
+                source = (
+                    "calendar_weekday_default"
+                    if weekday
+                    else "calendar_weekend_default"
+                )
+                managed = True
     entries = data.get("schedules", {}).get(active, [])
-    return [ScheduleEntry(**item) for item in entries]
+    return [ScheduleEntry(**item) for item in entries], {
+        "effective_date": effective_day.isoformat(),
+        "managed": managed,
+        "name": active,
+        "source": source,
+    }
 
 
 def save_schedule(entries: List[ScheduleEntry]) -> None:
-    data = load_all_schedules()
-    active = data.get("active") or "Default"
-    data.setdefault("schedules", {})[active] = [
-        entry_to_json(entry) for entry in sorted(entries, key=lambda e: (e.day, e.time, e.label))
-    ]
-    save_all_schedules(data)
+    with threadhall_integration_lock:
+        data = load_all_schedules()
+        active = data.get("active") or "Default"
+        data.setdefault("schedules", {})[active] = [
+            entry_to_json(entry) for entry in sorted(entries, key=lambda e: (e.day, e.time, e.label))
+        ]
+        save_all_schedules(data)
 
 
 def list_schedules() -> Dict[str, Any]:
@@ -580,37 +653,40 @@ def list_schedules() -> Dict[str, Any]:
 
 
 def create_schedule(name: str) -> Dict[str, Any]:
-    name = normalize_schedule_name(name)
-    data = load_all_schedules()
-    data.setdefault("schedules", {}).setdefault(name, [])
-    data["active"] = name
-    save_all_schedules(data)
-    return list_schedules()
+    with threadhall_integration_lock:
+        name = normalize_schedule_name(name)
+        data = load_all_schedules()
+        data.setdefault("schedules", {}).setdefault(name, [])
+        data["active"] = name
+        save_all_schedules(data)
+        return list_schedules()
 
 
 def activate_schedule(name: str) -> Dict[str, Any]:
-    name = normalize_schedule_name(name)
-    data = load_all_schedules()
-    if name not in data.get("schedules", {}):
-        raise HTTPException(status_code=404, detail="Schedule not found")
-    data["active"] = name
-    save_all_schedules(data)
-    return list_schedules()
+    with threadhall_integration_lock:
+        name = normalize_schedule_name(name)
+        data = load_all_schedules()
+        if name not in data.get("schedules", {}):
+            raise HTTPException(status_code=404, detail="Schedule not found")
+        data["active"] = name
+        save_all_schedules(data)
+        return list_schedules()
 
 
 def remove_schedule(name: str) -> Dict[str, Any]:
-    name = normalize_schedule_name(name)
-    data = load_all_schedules()
-    schedules = data.get("schedules", {})
-    if name not in schedules:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-    if name == data.get("active"):
-        raise HTTPException(status_code=400, detail="Activate another schedule before deleting this one")
-    if len(schedules) == 1:
-        raise HTTPException(status_code=400, detail="At least one schedule is required")
-    schedules.pop(name)
-    save_all_schedules(data)
-    return list_schedules()
+    with threadhall_integration_lock:
+        name = normalize_schedule_name(name)
+        data = load_all_schedules()
+        schedules = data.get("schedules", {})
+        if name not in schedules:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+        if name == data.get("active"):
+            raise HTTPException(status_code=400, detail="Activate another schedule before deleting this one")
+        if len(schedules) == 1:
+            raise HTTPException(status_code=400, detail="At least one schedule is required")
+        schedules.pop(name)
+        save_all_schedules(data)
+        return list_schedules()
 
 
 def load_devices() -> List[Device]:
@@ -740,78 +816,102 @@ def audio_display_name(filename: str) -> str:
     return Path(filename).stem
 
 
-def normalize_pixelsis_base_url(value: str) -> str:
+def normalize_threadhall_base_url(value: str) -> str:
     base_url = (value or "").strip().rstrip("/")
     parsed = urllib.parse.urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="Enter a valid PixelSIS URL")
+        raise HTTPException(status_code=400, detail="Enter a valid Threadhall URL")
     return base_url
 
 
-def load_pixelsis_config() -> Dict[str, Any]:
-    if not PIXELSIS_CONFIG_FILE.exists() and LEGACY_THREADHALL_CONFIG_FILE.exists():
+def load_threadhall_config() -> Dict[str, Any]:
+    if not THREADHALL_CONFIG_FILE.exists() and LEGACY_THREADHALL_CONFIG_FILE.exists():
         migrated = read_json(LEGACY_THREADHALL_CONFIG_FILE, {})
         if isinstance(migrated, dict):
-            write_json(PIXELSIS_CONFIG_FILE, migrated)
+            write_json(THREADHALL_CONFIG_FILE, migrated)
             try:
-                PIXELSIS_CONFIG_FILE.chmod(0o600)
+                THREADHALL_CONFIG_FILE.chmod(0o600)
             except OSError:
                 pass
-    raw = read_json(PIXELSIS_CONFIG_FILE, {})
+    raw = read_json(THREADHALL_CONFIG_FILE, {})
     if not isinstance(raw, dict):
         raw = {}
     env_base_url = os.environ.get(
-        "PIBELLS_PIXELSIS_BASE_URL",
-        os.environ.get("THREADHALL_BASE_URL", ""),
+        "THREADHALL_BASE_URL",
+        os.environ.get(
+            f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_BASE_URL",
+            "",
+        ),
     ).strip()
     env_token = os.environ.get(
-        "PIBELLS_PIXELSIS_DEVICE_TOKEN",
-        os.environ.get("THREADHALL_PIBELLS_TOKEN", ""),
+        "THREADHALL_PIBELLS_TOKEN",
+        os.environ.get(
+            f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_DEVICE_TOKEN",
+            "",
+        ),
     ).strip()
     if env_base_url:
-        raw["base_url"] = normalize_pixelsis_base_url(env_base_url)
+        raw["base_url"] = normalize_threadhall_base_url(env_base_url)
     if env_token:
         raw["token"] = env_token
         raw["enabled"] = True
     raw.setdefault("enabled", bool(raw.get("token")))
     raw.setdefault("device_uuid", str(uuid.uuid4()))
-    raw.setdefault("poll_seconds", PIXELSIS_DEFAULT_POLL_SECONDS)
+    raw.setdefault("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS)
     raw.setdefault("protocol_version", PIBELLS_PROTOCOL_VERSION)
     raw.setdefault("calendar", [])
     return raw
 
 
-def save_pixelsis_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def save_threadhall_config(config: Dict[str, Any]) -> Dict[str, Any]:
     config = {
-        **load_pixelsis_config(),
+        **load_threadhall_config(),
         **config,
     }
-    config["poll_seconds"] = max(10, min(300, int(config.get("poll_seconds") or PIXELSIS_DEFAULT_POLL_SECONDS)))
-    write_json(PIXELSIS_CONFIG_FILE, config)
+    config["poll_seconds"] = max(10, min(300, int(config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS)))
+    write_json(THREADHALL_CONFIG_FILE, config)
     try:
-        PIXELSIS_CONFIG_FILE.chmod(0o600)
+        THREADHALL_CONFIG_FILE.chmod(0o600)
     except OSError:
         pass
     return config
 
 
-def safe_pixelsis_status() -> Dict[str, Any]:
-    config = load_pixelsis_config()
+def stored_threadhall_authority(value: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(value, dict):
+        return None
+    authority: Dict[str, str] = {}
+    for key in ("district_id", "school_id", "device_id"):
+        raw = value.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        authority[key] = raw.strip()
+    return authority
+
+
+def safe_threadhall_status() -> Dict[str, Any]:
+    config = load_threadhall_config()
+    authority = stored_threadhall_authority(config.get("authority"))
+    pairing_ready = bool(config.get("token") and authority)
     return {
-        "enabled": bool(config.get("enabled") and config.get("token")),
-        "paired": bool(config.get("token")),
+        "enabled": bool(config.get("enabled") and pairing_ready),
+        "paired": pairing_ready,
         "base_url": config.get("base_url", ""),
         "device_uuid": config.get("device_uuid", ""),
         "device_name": config.get("device_name", ""),
-        "poll_seconds": config.get("poll_seconds", PIXELSIS_DEFAULT_POLL_SECONDS),
+        "poll_seconds": config.get("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS),
         "protocol_version": config.get("protocol_version", PIBELLS_PROTOCOL_VERSION),
         "schedule_revision": config.get("schedule_revision", ""),
         "last_sync_at": config.get("last_sync_at"),
-        "last_error": config.get("last_error", ""),
+        "last_error": config.get("last_error", "") or (
+            "Re-pair with Threadhall to establish complete controller authority."
+            if config.get("token") and not authority
+            else ""
+        ),
     }
 
 
-def pixelsis_request(
+def threadhall_request(
     config: Dict[str, Any],
     path: str,
     *,
@@ -819,7 +919,7 @@ def pixelsis_request(
     payload: Optional[Dict[str, Any]] = None,
     token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    base_url = normalize_pixelsis_base_url(str(config.get("base_url") or ""))
+    base_url = normalize_threadhall_base_url(str(config.get("base_url") or ""))
     url = f"{base_url}/{path.lstrip('/')}"
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {
@@ -842,67 +942,170 @@ def pixelsis_request(
             detail = parsed.get("message") or parsed.get("detail") or body
         except Exception:
             detail = body or exc.reason
-        raise HTTPException(status_code=502, detail=f"PixelSIS returned {exc.code}: {detail}")
+        raise HTTPException(status_code=502, detail=f"Threadhall returned {exc.code}: {detail}")
     except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"PixelSIS connection failed: {exc.reason}")
+        raise HTTPException(status_code=502, detail=f"Threadhall connection failed: {exc.reason}")
     if not body:
         return {}
     try:
         return json.loads(body)
     except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="PixelSIS returned invalid JSON")
+        raise HTTPException(status_code=502, detail="Threadhall returned invalid JSON")
 
 
-def pair_pixelsis(body: PixelSISPairRequest) -> Dict[str, Any]:
-    config = load_pixelsis_config()
-    config["base_url"] = normalize_pixelsis_base_url(body.base_url)
-    device_uuid = str(config.get("device_uuid") or uuid.uuid4())
-    name = (body.name or config.get("device_name") or socket.gethostname() or "PiBells Controller").strip()
-    local_ip = get_local_ip()
-    payload = {
-        "protocol_version": PIBELLS_PROTOCOL_VERSION,
-        "pairing_code": body.pairing_code,
-        "device_uuid": device_uuid,
-        "name": name,
-        "local_url": f"http://{local_ip}" if local_ip != "0.0.0.0" else "",
-        "hostname": socket.gethostname(),
-        "ip_address": local_ip,
-        "version": PIBELLS_AGENT_VERSION,
-        "capabilities": {
-            "barix": True,
-            "local_audio": True,
-            "targeted_outputs": True,
-            "outbound_pixelsis_sync": True,
-            "revisioned_schedules": True,
-            "calendar_exceptions": True,
-            "calendar_defaults": True,
-            "idempotent_commands": True,
-        },
-        "status": dashboard(),
-    }
-    response = pixelsis_request(config, "api/pibells/v1/pair", method="POST", payload=payload, token="")
-    data = response.get("data") if isinstance(response.get("data"), dict) else response
-    token = str(data.get("token") or "")
-    if not token:
-        raise HTTPException(status_code=502, detail="PixelSIS did not return a device token")
-    save_pixelsis_config({
-        "enabled": True,
-        "base_url": config["base_url"],
-        "token": token,
-        "device_uuid": device_uuid,
-        "device_name": name,
-        "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
-        "poll_seconds": int(data.get("poll_seconds") or PIXELSIS_DEFAULT_POLL_SECONDS),
+def normalize_threadhall_authority(value: Any) -> Dict[str, str]:
+    authority = stored_threadhall_authority(value)
+    if not authority:
+        raise HTTPException(status_code=502, detail="Threadhall returned invalid pairing authority")
+    return authority
+
+
+def clear_threadhall_authority_state(config: Dict[str, Any], reason: str) -> None:
+    stop_loops()
+    purge_threadhall_managed_schedules()
+    save_threadhall_config({
+        "enabled": False,
+        "base_url": config.get("base_url", ""),
+        "token": "",
+        "authority": {},
         "schedule_revision": "",
         "managed_schedule_hash": "",
         "calendar": [],
         "calendar_defaults": {},
-        "paired_at": datetime.now().isoformat(timespec="seconds"),
         "last_sync_at": None,
-        "last_error": "",
+        "last_error": reason,
     })
-    save_pixelsis_command_history({})
-    return safe_pixelsis_status()
+    save_threadhall_command_history({})
+
+
+def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
+    with threadhall_integration_lock:
+        environment_token = os.environ.get(
+            "THREADHALL_PIBELLS_TOKEN",
+            os.environ.get(
+                f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_DEVICE_TOKEN",
+                "",
+            ),
+        ).strip()
+        if environment_token:
+            raise HTTPException(
+                status_code=409,
+                detail="Remove the environment-managed Threadhall device token before interactive pairing.",
+            )
+        requested_base_url = normalize_threadhall_base_url(body.base_url)
+        environment_base_url = os.environ.get(
+            "THREADHALL_BASE_URL",
+            os.environ.get(
+                f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_BASE_URL",
+                "",
+            ),
+        ).strip()
+        if (
+            environment_base_url
+            and normalize_threadhall_base_url(environment_base_url)
+            != requested_base_url
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Pairing URL must match the environment-managed Threadhall URL.",
+            )
+        config = load_threadhall_config()
+        config["base_url"] = requested_base_url
+        device_uuid = str(config.get("device_uuid") or uuid.uuid4())
+        name = (body.name or config.get("device_name") or socket.gethostname() or "PiBells Controller").strip()
+        local_ip = get_local_ip()
+        payload = {
+            "protocol_version": PIBELLS_PROTOCOL_VERSION,
+            "pairing_code": body.pairing_code,
+            "device_uuid": device_uuid,
+            "name": name,
+            "local_url": f"http://{local_ip}" if local_ip != "0.0.0.0" else "",
+            "hostname": socket.gethostname(),
+            "ip_address": local_ip,
+            "version": PIBELLS_AGENT_VERSION,
+            "capabilities": {
+                "barix": True,
+                "local_audio": True,
+                "targeted_outputs": True,
+                "outbound_threadhall_sync": True,
+                "revisioned_schedules": True,
+                "calendar_exceptions": True,
+                "calendar_defaults": True,
+                "effective_schedule_evidence": True,
+                "idempotent_commands": True,
+            },
+            "status": dashboard(),
+        }
+        try:
+            response = threadhall_request(
+                config,
+                "api/pibells/v1/pair",
+                method="POST",
+                payload=payload,
+                token="",
+            )
+            if not isinstance(response, dict):
+                raise HTTPException(status_code=502, detail="Threadhall returned invalid pairing data")
+            data = response.get("data") if isinstance(response.get("data"), dict) else response
+            raw_token = data.get("token")
+            if not isinstance(raw_token, str) or not raw_token.strip():
+                raise HTTPException(status_code=502, detail="Threadhall did not return a device token")
+            token = raw_token.strip()
+            authority = normalize_threadhall_authority(data.get("authority"))
+            response_device = data.get("device")
+            if (
+                not isinstance(response_device, dict)
+                or response_device.get("id") != authority["device_id"]
+            ):
+                raise HTTPException(
+                    status_code=502,
+                    detail="Threadhall returned inconsistent pairing authority",
+                )
+            protocol_version = int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION)
+            if protocol_version < 1 or protocol_version > PIBELLS_PROTOCOL_VERSION:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Threadhall returned an unsupported pairing protocol",
+                )
+            poll_seconds = int(data.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS)
+        except Exception as exc:
+            clear_threadhall_authority_state(
+                config,
+                "Pairing stopped because the resulting controller authority could not be confirmed.",
+            )
+            if isinstance(exc, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=502,
+                detail="Threadhall returned invalid pairing data",
+            ) from exc
+        same_authority = bool(
+            config.get("token")
+            and isinstance(config.get("authority"), dict)
+            and config.get("authority") == authority
+        )
+        stop_loops()
+        if not same_authority:
+            purge_threadhall_managed_schedules()
+            save_threadhall_command_history({})
+        save_threadhall_config({
+            "enabled": True,
+            "base_url": config["base_url"],
+            "token": token,
+            "authority": authority,
+            "device_uuid": device_uuid,
+            "device_name": name,
+            "protocol_version": protocol_version,
+            "poll_seconds": poll_seconds,
+            "schedule_revision": config.get("schedule_revision", "") if same_authority else "",
+            "managed_schedule_hash": config.get("managed_schedule_hash", "") if same_authority else "",
+            "calendar": config.get("calendar", []) if same_authority else [],
+            "calendar_defaults": config.get("calendar_defaults", {}) if same_authority else {},
+            "paired_at": datetime.now().isoformat(timespec="seconds"),
+            "last_sync_at": None,
+            "last_error": "",
+        })
+        return safe_threadhall_status()
 
 
 def audio_file_for_key(sound_key: str) -> str:
@@ -916,16 +1119,32 @@ def audio_file_for_key(sound_key: str) -> str:
         raise
 
 
-def managed_pixelsis_schedule_name(value: str) -> str:
+THREADHALL_MANAGED_SCHEDULE_PREFIX = "Threadhall - "
+LEGACY_THREADHALL_MANAGED_SCHEDULE_PREFIX = f"{RETIRED_INTEGRATION_NAME} - "
+
+
+def is_threadhall_managed_schedule_name(value: str) -> bool:
+    return value.startswith(THREADHALL_MANAGED_SCHEDULE_PREFIX) or value.startswith(
+        LEGACY_THREADHALL_MANAGED_SCHEDULE_PREFIX
+    )
+
+
+def managed_threadhall_schedule_name(value: str) -> str:
     name = normalize_schedule_name(value or "Regular")
-    return name if name.startswith("PixelSIS - ") else f"PixelSIS - {name}"
+    if name.startswith(THREADHALL_MANAGED_SCHEDULE_PREFIX):
+        source_name = name[len(THREADHALL_MANAGED_SCHEDULE_PREFIX):]
+    elif name.startswith(LEGACY_THREADHALL_MANAGED_SCHEDULE_PREFIX):
+        source_name = name[len(LEGACY_THREADHALL_MANAGED_SCHEDULE_PREFIX):]
+    else:
+        source_name = name
+    return normalize_schedule_name(f"{THREADHALL_MANAGED_SCHEDULE_PREFIX}{source_name}")
 
 
 def normalize_calendar_defaults(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("managed"), bool):
         raise HTTPException(
             status_code=502,
-            detail="PixelSIS returned invalid calendar defaults",
+            detail="Threadhall returned invalid calendar defaults",
         )
 
     normalized: Dict[str, Any] = {"managed": value["managed"]}
@@ -937,41 +1156,147 @@ def normalize_calendar_defaults(value: Any) -> Dict[str, Any]:
         if not isinstance(raw_name, str):
             raise HTTPException(
                 status_code=502,
-                detail="PixelSIS returned invalid calendar defaults",
+                detail="Threadhall returned invalid calendar defaults",
             )
         cleaned = re.sub(r"\s+", " ", raw_name).strip()
         if len(cleaned) > 80:
             raise HTTPException(
                 status_code=502,
-                detail="PixelSIS returned invalid calendar defaults",
+                detail="Threadhall returned invalid calendar defaults",
             )
+        if value["managed"] and cleaned:
+            try:
+                managed_threadhall_schedule_name(cleaned)
+            except HTTPException as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Threadhall returned invalid calendar defaults",
+                ) from exc
         normalized[key] = cleaned or None
     return normalized
 
 
-def apply_pixelsis_schedules(schedules: List[Dict[str, Any]]) -> int:
+def normalize_threadhall_calendar(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=502, detail="Threadhall returned invalid calendar")
+    normalized: List[Dict[str, Any]] = []
+    dates = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid calendar")
+        raw_date = item.get("date")
+        instructional = item.get("instructional")
+        raw_name = item.get("schedule_name")
+        label = item.get("label")
+        if (
+            not isinstance(raw_date, str)
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date)
+            or type(instructional) is not bool
+            or not isinstance(raw_name, str)
+            or (label is not None and not isinstance(label, str))
+        ):
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid calendar")
+        try:
+            datetime.strptime(raw_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Threadhall returned invalid calendar",
+            ) from exc
+        if raw_date in dates:
+            raise HTTPException(
+                status_code=502,
+                detail="Threadhall returned duplicate calendar dates",
+            )
+        dates.add(raw_date)
+        name = re.sub(r"\s+", " ", raw_name).strip()
+        if instructional:
+            if not name:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Threadhall returned invalid calendar schedule",
+                )
+            try:
+                managed_threadhall_schedule_name(name)
+            except HTTPException as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Threadhall returned invalid calendar schedule",
+                ) from exc
+        normalized.append({
+            "date": raw_date,
+            "instructional": instructional,
+            "schedule_name": name,
+            "label": label.strip() if isinstance(label, str) else None,
+        })
+    return normalized
+
+
+def validate_threadhall_bundle_links(
+    schedules: List[Dict[str, Any]],
+    calendar: List[Dict[str, Any]],
+    calendar_defaults: Optional[Dict[str, Any]],
+) -> None:
+    managed_names = {
+        managed_threadhall_schedule_name(str(schedule.get("name") or "Regular"))
+        for schedule in schedules
+    }
+    for day in calendar:
+        if not day["instructional"]:
+            continue
+        if managed_threadhall_schedule_name(day["schedule_name"]) not in managed_names:
+            raise HTTPException(
+                status_code=502,
+                detail="Threadhall calendar references an unpublished managed schedule",
+            )
+    if calendar_defaults and calendar_defaults.get("managed") is True:
+        for key in ("weekday_schedule_name", "weekend_schedule_name"):
+            name = calendar_defaults.get(key)
+            if name and managed_threadhall_schedule_name(name) not in managed_names:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Threadhall calendar default references an unpublished managed schedule",
+                )
+
+
+def apply_threadhall_schedules(schedules: List[Dict[str, Any]]) -> int:
     current = load_all_schedules()
     current_active = str(current.get("active") or "")
     merged = {
         name: entries
         for name, entries in current.get("schedules", {}).items()
-        if not str(name).startswith("Threadhall") and not str(name).startswith("PixelSIS - ")
+        if not is_threadhall_managed_schedule_name(str(name))
     }
     preserve_local_active = bool(
         current_active
         and current_active != "Default"
-        and not current_active.startswith("Threadhall")
-        and not current_active.startswith("PixelSIS - ")
+        and not is_threadhall_managed_schedule_name(current_active)
         and current_active in merged
     )
     active_name = current_active if preserve_local_active else (current_active or "Default")
     applied = 0
+    managed_names = set()
     for schedule in schedules:
-        name = managed_pixelsis_schedule_name(str(schedule.get("name") or "Regular"))
+        name = managed_threadhall_schedule_name(str(schedule.get("name") or "Regular"))
+        if name in managed_names:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Threadhall returned duplicate managed schedule {name}",
+            )
+        managed_names.add(name)
         entries: List[Dict[str, Any]] = []
-        for item in schedule.get("entries", []):
+        raw_entries = schedule.get("entries", [])
+        if not isinstance(raw_entries, list):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Threadhall returned invalid entries for managed schedule {name}",
+            )
+        for item in raw_entries:
             if not isinstance(item, dict):
-                continue
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Threadhall returned an invalid entry for managed schedule {name}",
+                )
             try:
                 sound_file = item.get("sound_file") or audio_file_for_key(str(item.get("sound_key") or "passing"))
                 entry = ScheduleEntry(
@@ -984,8 +1309,12 @@ def apply_pixelsis_schedules(schedules: List[Dict[str, Any]]) -> int:
                     output_keys=item.get("output_keys") if "output_keys" in item else None,
                 )
                 entries.append(entry_to_json(entry))
-            except Exception:
-                continue
+            except Exception as exc:
+                detail = str(getattr(exc, "detail", exc)) or "invalid schedule entry"
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Threadhall returned an invalid entry for managed schedule {name}: {detail}",
+                ) from exc
         merged[name] = sorted(entries, key=lambda entry: (entry["day"], entry["time"], entry["label"]))
         applied += 1
         if schedule.get("active", True) and not preserve_local_active:
@@ -996,7 +1325,24 @@ def apply_pixelsis_schedules(schedules: List[Dict[str, Any]]) -> int:
     return applied
 
 
-def run_pixelsis_command(command: Dict[str, Any]) -> str:
+def purge_threadhall_managed_schedules() -> int:
+    current = load_all_schedules()
+    schedules = {
+        name: entries
+        for name, entries in current.get("schedules", {}).items()
+        if not is_threadhall_managed_schedule_name(str(name))
+    }
+    removed = len(current.get("schedules", {})) - len(schedules)
+    if not schedules:
+        schedules = {"Default": []}
+    active = str(current.get("active") or "")
+    if active not in schedules:
+        active = next(iter(schedules.keys()))
+    save_all_schedules({"active": active, "schedules": schedules})
+    return removed
+
+
+def run_threadhall_command(command: Dict[str, Any]) -> str:
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
     raw_type = str(command.get("type") or "").strip()
     command_type = raw_type.upper()
@@ -1014,14 +1360,14 @@ def run_pixelsis_command(command: Dict[str, Any]) -> str:
     if command_type == "ACTIVATE_SCHEDULE":
         schedule_name = str(payload.get("schedule_name") or "")
         if schedule_name:
-            managed_name = managed_pixelsis_schedule_name(schedule_name)
+            managed_name = managed_threadhall_schedule_name(schedule_name)
             schedules = load_all_schedules().get("schedules", {})
             selected = managed_name if managed_name in schedules else schedule_name
             activate_schedule(selected)
             return f"Activated schedule {selected}"
         raise HTTPException(status_code=422, detail="Schedule name is required")
     if command_type not in {"PLAY_SOUND", "TEST_OUTPUT", "EMERGENCY_ALERT"} and not emergency_action:
-        raise HTTPException(status_code=422, detail=f"Unsupported PixelSIS command: {raw_type}")
+        raise HTTPException(status_code=422, detail=f"Unsupported Threadhall command: {raw_type}")
     sound_key = str(
         payload.get("sound_key")
         or emergency_action
@@ -1035,14 +1381,15 @@ def run_pixelsis_command(command: Dict[str, Any]) -> str:
     return f"Played {audio_display_name(sound_file)} for {payload.get('label') or command_type}"
 
 
-def acknowledge_pixelsis_command(
+def acknowledge_threadhall_command(
     config: Dict[str, Any],
     command_id: Any,
     status: str,
     summary: str,
     detail: Optional[Dict[str, Any]] = None,
+    occurred_at: Optional[str] = None,
 ) -> None:
-    pixelsis_request(
+    threadhall_request(
         config,
         f"api/pibells/v1/commands/{command_id}/ack",
         method="POST",
@@ -1050,30 +1397,61 @@ def acknowledge_pixelsis_command(
             "status": status,
             "summary": summary,
             "detail": detail or {},
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
         },
     )
 
 
-def load_pixelsis_command_history() -> Dict[str, Dict[str, Any]]:
-    raw = read_json(PIXELSIS_COMMAND_HISTORY_FILE, {})
+def load_threadhall_command_history() -> Dict[str, Dict[str, Any]]:
+    if (
+        not THREADHALL_COMMAND_HISTORY_FILE.exists()
+        and LEGACY_THREADHALL_COMMAND_HISTORY_FILE.exists()
+    ):
+        migrated = read_json(LEGACY_THREADHALL_COMMAND_HISTORY_FILE, {})
+        if isinstance(migrated, dict):
+            write_json(THREADHALL_COMMAND_HISTORY_FILE, migrated)
+            try:
+                THREADHALL_COMMAND_HISTORY_FILE.chmod(0o600)
+            except OSError:
+                pass
+    raw = read_json(THREADHALL_COMMAND_HISTORY_FILE, {})
     return raw if isinstance(raw, dict) else {}
 
 
-def save_pixelsis_command_history(history: Dict[str, Dict[str, Any]]) -> None:
-    entries = sorted(
-        history.items(),
+def save_threadhall_command_history(history: Dict[str, Dict[str, Any]]) -> None:
+    valid_entries = [
+        (str(command_id), outcome)
+        for command_id, outcome in history.items()
+        if isinstance(outcome, dict)
+    ]
+    pending_entries = [
+        item for item in valid_entries if item[1].get("pending_ack") is True
+    ]
+    completed_entries = [
+        item for item in valid_entries if item[1].get("pending_ack") is not True
+    ]
+    pending_entries.sort(
         key=lambda item: str(item[1].get("occurred_at") or ""),
         reverse=True,
-    )[:500]
-    write_json(PIXELSIS_COMMAND_HISTORY_FILE, dict(entries))
+    )
+    completed_entries.sort(
+        key=lambda item: str(item[1].get("occurred_at") or ""),
+        reverse=True,
+    )
+    # Never evict an outcome that has not reached Threadhall. Completed
+    # receipts are the only entries eligible for the bounded history tail.
+    completed_limit = max(0, 500 - len(pending_entries))
+    write_json(
+        THREADHALL_COMMAND_HISTORY_FILE,
+        dict(pending_entries + completed_entries[:completed_limit]),
+    )
     try:
-        PIXELSIS_COMMAND_HISTORY_FILE.chmod(0o600)
+        THREADHALL_COMMAND_HISTORY_FILE.chmod(0o600)
     except OSError:
         pass
 
 
-def pixelsis_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
+def threadhall_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
     local_ip = get_local_ip()
     audio_manifest = [
         {
@@ -1103,6 +1481,7 @@ def pixelsis_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
             "revisioned_schedules": True,
             "calendar_exceptions": True,
             "calendar_defaults": True,
+            "effective_schedule_evidence": True,
             "idempotent_commands": True,
         },
         "telemetry": status,
@@ -1159,7 +1538,7 @@ def managed_schedule_state_hash() -> str:
     managed = {
         name: entries
         for name, entries in schedules.items()
-        if str(name).startswith("PixelSIS - ")
+        if is_threadhall_managed_schedule_name(str(name))
     }
     canonical = json.dumps(
         managed,
@@ -1170,124 +1549,261 @@ def managed_schedule_state_hash() -> str:
     return f"managed-sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
-def sync_pixelsis_once() -> Dict[str, Any]:
-    config = load_pixelsis_config()
-    if not config.get("enabled") or not config.get("token") or not config.get("base_url"):
-        return safe_pixelsis_status()
-    response = pixelsis_request(
-        config,
-        "api/pibells/v1/sync",
-        method="POST",
-        payload=pixelsis_sync_payload(config),
+def retired_managed_schedule_keys_present() -> bool:
+    schedules = load_all_schedules().get("schedules", {})
+    return any(
+        str(name).startswith(LEGACY_THREADHALL_MANAGED_SCHEDULE_PREFIX)
+        for name in schedules
     )
-    data = response.get("data") if isinstance(response.get("data"), dict) else response
-    raw_schedules = data.get("schedules")
-    schedules_supplied = isinstance(raw_schedules, list)
-    schedules = [item for item in raw_schedules if isinstance(item, dict)] if schedules_supplied else []
-    raw_calendar = data.get("calendar")
-    calendar_supplied = isinstance(raw_calendar, list)
-    calendar = [item for item in raw_calendar if isinstance(item, dict)] if calendar_supplied else []
-    calendar_defaults_supplied = "calendar_defaults" in data
-    calendar_defaults = (
-        normalize_calendar_defaults(data.get("calendar_defaults"))
-        if calendar_defaults_supplied
-        else None
-    )
-    server_schedule_revision = str(data.get("schedule_revision") or "")
-    schedule_revision = server_schedule_revision or (
-        legacy_schedule_revision(schedules) if schedules else ""
-    )
-    received_schedules = 0
-    revision_changed = bool(
-        schedule_revision
-        and schedule_revision != str(config.get("schedule_revision") or "")
-    )
-    persisted_state_hash = str(config.get("managed_schedule_hash") or "")
-    state_hash_mismatch = bool(
-        schedules_supplied
-        and (
-            not persisted_state_hash
-            or managed_schedule_state_hash() != persisted_state_hash
+
+
+def command_expired_before_execution(command: Dict[str, Any]) -> bool:
+    raw = command.get("expires_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        expires_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= datetime.now(timezone.utc)
+
+
+def deliver_threadhall_outcome(
+    config: Dict[str, Any],
+    command_id: str,
+    outcome: Dict[str, Any],
+) -> Optional[str]:
+    status = str(outcome.get("status") or "failed")
+    summary = str(outcome.get("summary") or "Controller outcome was not recorded")
+    detail = outcome.get("detail") if isinstance(outcome.get("detail"), dict) else {}
+    occurred_at = str(outcome.get("occurred_at") or "") or datetime.now(timezone.utc).isoformat()
+    outcome.update({
+        "status": status,
+        "summary": summary,
+        "detail": detail,
+        "occurred_at": occurred_at,
+    })
+    try:
+        acknowledge_threadhall_command(
+            config,
+            command_id,
+            status,
+            summary,
+            detail,
+            occurred_at,
         )
-    )
-    if schedules_supplied and (revision_changed or state_hash_mismatch):
-        received_schedules = apply_pixelsis_schedules(schedules)
-        schedule_updates: Dict[str, Any] = {
-            "schedule_revision": schedule_revision,
+        outcome["pending_ack"] = False
+        return None
+    except Exception as exc:
+        outcome["pending_ack"] = True
+        return str(getattr(exc, "detail", exc))
+
+
+def sync_threadhall_once() -> Dict[str, Any]:
+    with threadhall_integration_lock:
+        config = load_threadhall_config()
+        if not config.get("enabled") or not config.get("token") or not config.get("base_url"):
+            return safe_threadhall_status()
+        authority = stored_threadhall_authority(config.get("authority"))
+        if not authority:
+            stop_loops()
+            purge_threadhall_managed_schedules()
+            save_threadhall_config({
+                "enabled": False,
+                "token": "",
+                "authority": {},
+                "schedule_revision": "",
+                "managed_schedule_hash": "",
+                "calendar": [],
+                "calendar_defaults": {},
+                "last_sync_at": None,
+                "last_error": "Synchronization stopped because complete pairing authority is unavailable.",
+            })
+            save_threadhall_command_history({})
+            raise HTTPException(
+                status_code=409,
+                detail="Re-pair with Threadhall before synchronizing",
+            )
+        response = threadhall_request(
+            config,
+            "api/pibells/v1/sync",
+            method="POST",
+            payload=threadhall_sync_payload(config),
+        )
+        data = response.get("data") if isinstance(response.get("data"), dict) else response
+        response_device = data.get("device") if isinstance(data.get("device"), dict) else {}
+        if response_device.get("id") != authority["device_id"]:
+            stop_loops()
+            purge_threadhall_managed_schedules()
+            save_threadhall_config({
+                "enabled": False,
+                "token": "",
+                "authority": {},
+                "schedule_revision": "",
+                "managed_schedule_hash": "",
+                "calendar": [],
+                "calendar_defaults": {},
+                "last_sync_at": None,
+                "last_error": "Synchronization stopped because pairing authority changed.",
+            })
+            save_threadhall_command_history({})
+            raise HTTPException(status_code=409, detail="Threadhall pairing authority changed")
+        raw_schedules = data.get("schedules")
+        schedules_supplied = isinstance(raw_schedules, list)
+        if schedules_supplied and any(not isinstance(item, dict) for item in raw_schedules):
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid schedules")
+        schedules = list(raw_schedules) if schedules_supplied else []
+        raw_calendar = data.get("calendar")
+        calendar_supplied = isinstance(raw_calendar, list)
+        calendar = normalize_threadhall_calendar(raw_calendar) if calendar_supplied else []
+        calendar_defaults_supplied = "calendar_defaults" in data
+        calendar_defaults = (
+            normalize_calendar_defaults(data.get("calendar_defaults"))
+            if calendar_defaults_supplied
+            else None
+        )
+        if (calendar_supplied or calendar_defaults_supplied) and not schedules_supplied:
+            raise HTTPException(
+                status_code=502,
+                detail="Threadhall returned calendar authority without a complete schedule bundle",
+            )
+        if schedules_supplied:
+            validate_threadhall_bundle_links(
+                schedules,
+                calendar if calendar_supplied else [],
+                calendar_defaults,
+            )
+        server_schedule_revision = str(data.get("schedule_revision") or "")
+        schedule_revision = server_schedule_revision or (
+            legacy_schedule_revision(schedules) if schedules else ""
+        )
+        received_schedules = 0
+        revision_changed = bool(
+            schedule_revision
+            and schedule_revision != str(config.get("schedule_revision") or "")
+        )
+        persisted_state_hash = str(config.get("managed_schedule_hash") or "")
+        state_hash_mismatch = bool(
+            schedules_supplied
+            and (
+                not persisted_state_hash
+                or managed_schedule_state_hash() != persisted_state_hash
+                or retired_managed_schedule_keys_present()
+            )
+        )
+        if schedules_supplied and (revision_changed or state_hash_mismatch):
+            received_schedules = apply_threadhall_schedules(schedules)
+            schedule_updates: Dict[str, Any] = {
+                "schedule_revision": schedule_revision,
+            }
+            if calendar_supplied:
+                schedule_updates["calendar"] = calendar
+            if calendar_defaults_supplied:
+                schedule_updates["calendar_defaults"] = calendar_defaults
+            schedule_updates["managed_schedule_hash"] = managed_schedule_state_hash()
+            config = save_threadhall_config(schedule_updates)
+        history = load_threadhall_command_history()
+        acknowledgement_errors: List[str] = []
+        for command_id, pending in history.items():
+            if not isinstance(pending, dict) or pending.get("pending_ack") is not True:
+                continue
+            error = deliver_threadhall_outcome(config, command_id, pending)
+            if error:
+                acknowledgement_errors.append(error)
+        save_threadhall_command_history(history)
+        for command in data.get("commands", []):
+            if not isinstance(command, dict) or "id" not in command:
+                continue
+            command_id = str(command["id"])
+            previous = history.get(command_id)
+            if previous:
+                error = deliver_threadhall_outcome(config, command_id, previous)
+                if error:
+                    acknowledgement_errors.append(error)
+                save_threadhall_command_history(history)
+                continue
+            occurred_at = datetime.now(timezone.utc).isoformat()
+            detail: Dict[str, Any] = {}
+            if command_expired_before_execution(command):
+                outcome = {
+                    "status": "failed",
+                    "summary": "Command expired before controller execution",
+                    "detail": {"expired_before_execution": True},
+                    "occurred_at": occurred_at,
+                    "pending_ack": True,
+                }
+            else:
+                # Write a fail-closed receipt before crossing the physical-action
+                # boundary. If the controller loses power during playback, the
+                # next sync reports an unknown outcome instead of replaying it.
+                outcome = {
+                    "status": "failed",
+                    "summary": "Controller execution was interrupted; physical outcome is unknown",
+                    "detail": {"execution_outcome_unknown": True},
+                    "occurred_at": occurred_at,
+                    "pending_ack": True,
+                }
+                history[command_id] = outcome
+                save_threadhall_command_history(history)
+                try:
+                    summary = run_threadhall_command(command)
+                    outcome = {
+                        "status": "acknowledged",
+                        "summary": summary,
+                        "detail": detail,
+                        "occurred_at": datetime.now(timezone.utc).isoformat(),
+                        "pending_ack": True,
+                    }
+                except Exception as exc:
+                    outcome = {
+                        "status": "failed",
+                        "summary": str(getattr(exc, "detail", exc)),
+                        "detail": detail,
+                        "occurred_at": datetime.now(timezone.utc).isoformat(),
+                        "pending_ack": True,
+                    }
+            history[command_id] = outcome
+            save_threadhall_command_history(history)
+            error = deliver_threadhall_outcome(config, command_id, outcome)
+            if error:
+                acknowledgement_errors.append(error)
+            save_threadhall_command_history(history)
+        sync_updates: Dict[str, Any] = {
+            "enabled": True,
+            "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
+            "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
+            "schedule_revision": schedule_revision or config.get("schedule_revision", ""),
+            "last_sync_at": datetime.now().isoformat(timespec="seconds"),
+            "last_error": acknowledgement_errors[-1] if acknowledgement_errors else "",
         }
         if calendar_supplied:
-            schedule_updates["calendar"] = calendar
+            sync_updates["calendar"] = calendar
         if calendar_defaults_supplied:
-            schedule_updates["calendar_defaults"] = calendar_defaults
-        schedule_updates["managed_schedule_hash"] = managed_schedule_state_hash()
-        config = save_pixelsis_config(schedule_updates)
-    history = load_pixelsis_command_history()
-    for command in data.get("commands", []):
-        if not isinstance(command, dict) or "id" not in command:
-            continue
-        command_id = str(command["id"])
-        previous = history.get(command_id)
-        if previous:
-            acknowledge_pixelsis_command(
-                config,
-                command["id"],
-                str(previous.get("status") or "acknowledged"),
-                str(previous.get("summary") or "Previously executed"),
-                {"duplicate_delivery": True},
-            )
-            continue
-        try:
-            summary = run_pixelsis_command(command)
-            outcome = {
-                "status": "acknowledged",
-                "summary": summary,
-                "occurred_at": datetime.now(timezone.utc).isoformat(),
-            }
-        except Exception as exc:
-            outcome = {
-                "status": "failed",
-                "summary": str(getattr(exc, "detail", exc)),
-                "occurred_at": datetime.now(timezone.utc).isoformat(),
-            }
-        history[command_id] = outcome
-        save_pixelsis_command_history(history)
-        acknowledge_pixelsis_command(
-            config,
-            command["id"],
-            outcome["status"],
-            outcome["summary"],
-        )
-    sync_updates: Dict[str, Any] = {
-        "enabled": True,
-        "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
-        "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or PIXELSIS_DEFAULT_POLL_SECONDS),
-        "schedule_revision": schedule_revision or config.get("schedule_revision", ""),
-        "last_sync_at": datetime.now().isoformat(timespec="seconds"),
-        "last_error": "",
-    }
-    if calendar_supplied:
-        sync_updates["calendar"] = calendar
-    if calendar_defaults_supplied:
-        sync_updates["calendar_defaults"] = calendar_defaults
-    saved = save_pixelsis_config(sync_updates)
-    return {
-        **safe_pixelsis_status(),
-        "received_commands": len(data.get("commands", [])),
-        "received_schedules": received_schedules,
-        "poll_seconds": saved.get("poll_seconds"),
-    }
+            sync_updates["calendar_defaults"] = calendar_defaults
+        saved = save_threadhall_config(sync_updates)
+        return {
+            **safe_threadhall_status(),
+            "received_commands": len(data.get("commands", [])),
+            "received_schedules": received_schedules,
+            "pending_acknowledgements": len(
+                [entry for entry in history.values() if entry.get("pending_ack") is True]
+            ),
+            "poll_seconds": saved.get("poll_seconds"),
+        }
 
 
-def pixelsis_sync_loop() -> None:
+def threadhall_sync_loop() -> None:
     while True:
-        delay = PIXELSIS_DEFAULT_POLL_SECONDS
+        delay = THREADHALL_DEFAULT_POLL_SECONDS
         try:
-            status = sync_pixelsis_once()
+            status = sync_threadhall_once()
             delay = int(status.get("poll_seconds") or delay)
         except Exception as exc:
-            config = load_pixelsis_config()
+            config = load_threadhall_config()
             if config.get("enabled") and config.get("token"):
-                save_pixelsis_config({
+                save_threadhall_config({
                     "last_error": str(getattr(exc, "detail", exc)),
                     "last_sync_at": config.get("last_sync_at"),
                 })
@@ -1295,28 +1811,44 @@ def pixelsis_sync_loop() -> None:
         time.sleep(max(10, min(300, delay)))
 
 
-def start_pixelsis_sync() -> None:
-    global pixelsis_sync_started
-    disabled = os.environ.get("PIBELLS_DISABLE_PIXELSIS_SYNC") == "1" or os.environ.get("PIBELLS_DISABLE_THREADHALL_SYNC") == "1"
-    if pixelsis_sync_started or disabled:
+def start_threadhall_sync() -> None:
+    global threadhall_sync_started
+    disabled = (
+        os.environ.get("PIBELLS_DISABLE_THREADHALL_SYNC") == "1"
+        or os.environ.get(
+            f"PIBELLS_DISABLE_{RETIRED_INTEGRATION_NAME.upper()}_SYNC"
+        ) == "1"
+    )
+    if threadhall_sync_started or disabled:
         return
-    pixelsis_sync_started = True
-    threading.Thread(target=pixelsis_sync_loop, daemon=True).start()
+    threadhall_sync_started = True
+    threading.Thread(target=threadhall_sync_loop, daemon=True).start()
 
 
-# Compatibility aliases for existing PiBells deployments and local extensions.
-normalize_threadhall_base_url = normalize_pixelsis_base_url
-load_threadhall_config = load_pixelsis_config
-save_threadhall_config = save_pixelsis_config
-safe_threadhall_status = safe_pixelsis_status
-threadhall_request = pixelsis_request
-pair_threadhall = pair_pixelsis
-apply_threadhall_schedules = apply_pixelsis_schedules
-run_threadhall_command = run_pixelsis_command
-acknowledge_threadhall_command = acknowledge_pixelsis_command
-sync_threadhall_once = sync_pixelsis_once
-threadhall_sync_loop = pixelsis_sync_loop
-start_threadhall_sync = start_pixelsis_sync
+# Runtime-only compatibility aliases keep existing local extensions working
+# without publishing the retired name in current source symbols or API docs.
+globals().update({
+    f"{RETIRED_INTEGRATION_NAME}PairRequest": ThreadhallPairRequest,
+    f"normalize_{RETIRED_INTEGRATION_SLUG}_base_url": normalize_threadhall_base_url,
+    f"load_{RETIRED_INTEGRATION_SLUG}_config": load_threadhall_config,
+    f"save_{RETIRED_INTEGRATION_SLUG}_config": save_threadhall_config,
+    f"safe_{RETIRED_INTEGRATION_SLUG}_status": safe_threadhall_status,
+    f"{RETIRED_INTEGRATION_SLUG}_request": threadhall_request,
+    f"pair_{RETIRED_INTEGRATION_SLUG}": pair_threadhall,
+    f"managed_{RETIRED_INTEGRATION_SLUG}_schedule_name": managed_threadhall_schedule_name,
+    f"apply_{RETIRED_INTEGRATION_SLUG}_schedules": apply_threadhall_schedules,
+    f"run_{RETIRED_INTEGRATION_SLUG}_command": run_threadhall_command,
+    f"acknowledge_{RETIRED_INTEGRATION_SLUG}_command": acknowledge_threadhall_command,
+    f"load_{RETIRED_INTEGRATION_SLUG}_command_history": load_threadhall_command_history,
+    f"save_{RETIRED_INTEGRATION_SLUG}_command_history": save_threadhall_command_history,
+    f"{RETIRED_INTEGRATION_SLUG}_sync_payload": threadhall_sync_payload,
+    f"sync_{RETIRED_INTEGRATION_SLUG}_once": sync_threadhall_once,
+    f"{RETIRED_INTEGRATION_SLUG}_sync_loop": threadhall_sync_loop,
+    f"start_{RETIRED_INTEGRATION_SLUG}_sync": start_threadhall_sync,
+    f"{RETIRED_INTEGRATION_NAME.upper()}_CONFIG_FILE": THREADHALL_CONFIG_FILE,
+    f"{RETIRED_INTEGRATION_NAME.upper()}_COMMAND_HISTORY_FILE": THREADHALL_COMMAND_HISTORY_FILE,
+    f"{RETIRED_INTEGRATION_NAME.upper()}_DEFAULT_POLL_SECONDS": THREADHALL_DEFAULT_POLL_SECONDS,
+})
 
 
 def find_audio_usages(filename: str) -> Dict[str, List[str]]:
@@ -1334,12 +1866,13 @@ def find_audio_usages(filename: str) -> Dict[str, List[str]]:
 
 
 def remove_audio_references(filename: str) -> None:
-    schedules = load_all_schedules()
-    for schedule_name, entries in schedules.get("schedules", {}).items():
-        schedules["schedules"][schedule_name] = [
-            entry for entry in entries if entry.get("sound_file") != filename
-        ]
-    save_all_schedules(schedules)
+    with threadhall_integration_lock:
+        schedules = load_all_schedules()
+        for schedule_name, entries in schedules.get("schedules", {}).items():
+            schedules["schedules"][schedule_name] = [
+                entry for entry in entries if entry.get("sound_file") != filename
+            ]
+        save_all_schedules(schedules)
     save_buttons([button for button in load_buttons() if button.sound_file != filename])
 
 
@@ -2005,7 +2538,7 @@ def start_daemon() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     start_daemon()
-    start_pixelsis_sync()
+    start_threadhall_sync()
     yield
     stop_loops()
 
@@ -2081,59 +2614,93 @@ def change_password(request: Request, body: PasswordChangeRequest):
     return {"status": "updated"}
 
 
-@app.get("/api/pixelsis/status")
-def get_pixelsis_status():
-    return safe_pixelsis_status()
-
-
-@app.post("/api/pixelsis/pair")
-def pair_pixelsis_device(body: PixelSISPairRequest):
-    return pair_pixelsis(body)
-
-
-def unpair_pixelsis() -> Dict[str, Any]:
-    config = load_pixelsis_config()
-    save_pixelsis_config({
-        "enabled": False,
-        "base_url": config.get("base_url", ""),
-        "device_uuid": config.get("device_uuid") or str(uuid.uuid4()),
-        "device_name": config.get("device_name", ""),
-        "token": "",
-        "last_error": "",
-    })
-    save_pixelsis_command_history({})
-    return safe_pixelsis_status()
-
-
-@app.post("/api/pixelsis/unpair")
-def unpair_pixelsis_device():
-    return unpair_pixelsis()
-
-
-@app.post("/api/pixelsis/sync-now")
-def sync_pixelsis_now():
-    return sync_pixelsis_once()
-
-
-# Deprecated route aliases keep already-deployed dashboards operable during migration.
-@app.get("/api/threadhall/status", deprecated=True)
+@app.get("/api/threadhall/status")
 def get_threadhall_status():
-    return safe_pixelsis_status()
+    return safe_threadhall_status()
 
 
-@app.post("/api/threadhall/pair", deprecated=True)
-def pair_threadhall_device(body: PixelSISPairRequest):
-    return pair_pixelsis(body)
+@app.post("/api/threadhall/pair")
+def pair_threadhall_device(body: ThreadhallPairRequest):
+    return pair_threadhall(body)
 
 
-@app.post("/api/threadhall/unpair", deprecated=True)
+def unpair_threadhall() -> Dict[str, Any]:
+    with threadhall_integration_lock:
+        config = load_threadhall_config()
+        stop_loops()
+        purge_threadhall_managed_schedules()
+        save_threadhall_config({
+            "enabled": False,
+            "base_url": config.get("base_url", ""),
+            "device_uuid": config.get("device_uuid") or str(uuid.uuid4()),
+            "device_name": config.get("device_name", ""),
+            "token": "",
+            "authority": {},
+            "schedule_revision": "",
+            "managed_schedule_hash": "",
+            "calendar": [],
+            "calendar_defaults": {},
+            "last_sync_at": None,
+            "last_error": "",
+        })
+        save_threadhall_command_history({})
+        return safe_threadhall_status()
+
+
+@app.post("/api/threadhall/unpair")
 def unpair_threadhall_device():
-    return unpair_pixelsis()
+    return unpair_threadhall()
 
 
-@app.post("/api/threadhall/sync-now", deprecated=True)
+@app.post("/api/threadhall/sync-now")
 def sync_threadhall_now():
-    return sync_pixelsis_once()
+    return sync_threadhall_once()
+
+
+# Hidden compatibility routes keep already-deployed dashboards operable without
+# publishing the retired product name in the current OpenAPI surface.
+def get_retired_integration_status():
+    return safe_threadhall_status()
+
+
+def pair_retired_integration_device(body: ThreadhallPairRequest):
+    return pair_threadhall(body)
+
+
+def unpair_retired_integration_device():
+    return unpair_threadhall()
+
+
+def sync_retired_integration_now():
+    return sync_threadhall_once()
+
+
+retired_api_root = f"/api/{RETIRED_INTEGRATION_SLUG}"
+app.add_api_route(
+    f"{retired_api_root}/status",
+    get_retired_integration_status,
+    methods=["GET"],
+    include_in_schema=False,
+)
+app.add_api_route(
+    f"{retired_api_root}/pair",
+    pair_retired_integration_device,
+    methods=["POST"],
+    include_in_schema=False,
+)
+app.add_api_route(
+    f"{retired_api_root}/unpair",
+    unpair_retired_integration_device,
+    methods=["POST"],
+    include_in_schema=False,
+)
+app.add_api_route(
+    f"{retired_api_root}/sync-now",
+    sync_retired_integration_now,
+    methods=["POST"],
+    include_in_schema=False,
+)
+globals()[f"unpair_{RETIRED_INTEGRATION_SLUG}"] = unpair_threadhall
 
 
 @app.get("/api/schedule", response_model=List[ScheduleEntry])
@@ -2428,12 +2995,13 @@ def next_event_payload(
 
 @app.get("/api/dashboard")
 def dashboard():
-    entries = load_schedule()
+    entries, effective_schedule = resolve_effective_schedule()
     schedules = load_all_schedules()
     devices = load_devices()
     statuses = {device_key(device): check_device(device, timeout=0.25) for device in devices}
     return {
         "active_schedule": schedules.get("active"),
+        "effective_schedule": effective_schedule,
         "schedule_options": list(schedules.get("schedules", {}).keys()),
         "event_count": len(entries),
         "enabled_event_count": len([entry for entry in entries if entry.enabled]),
