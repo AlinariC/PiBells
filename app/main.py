@@ -1,4 +1,5 @@
 import concurrent.futures
+import copy
 import hashlib
 import http.client
 import ipaddress
@@ -7,6 +8,7 @@ import os
 import re
 import secrets
 import shlex
+import signal
 import socket
 import subprocess
 import threading
@@ -72,8 +74,9 @@ THREADHALL_DEFAULT_POLL_SECONDS = max(
         )
     ),
 )
-PIBELLS_PROTOCOL_VERSION = 1
-PIBELLS_AGENT_VERSION = "pibells-threadhall-v1"
+PIBELLS_PROTOCOL_VERSION = 2
+PIBELLS_AGENT_VERSION = "pibells-threadhall-v2"
+THREADHALL_CLAIM_URL_TEMPLATE = "/api/pibells/v2/commands/{command_id}/claim"
 THREADHALL_MAX_CLOCK_SKEW_SECONDS = 5
 THREADHALL_MAX_CLOCK_SAMPLE_AGE_SECONDS = 120
 THREADHALL_MAX_CLOCK_JUMP_SECONDS = 5
@@ -92,12 +95,26 @@ STATIC_DIR.mkdir(exist_ok=True)
 
 storage_lock = threading.RLock()
 threadhall_integration_lock = threading.RLock()
+threadhall_pair_request_lock = threading.Lock()
 threadhall_sync_request_lock = threading.Lock()
+threadhall_claim_worker_lock = threading.Lock()
 threadhall_ack_worker_lock = threading.Lock()
 THREADHALL_ACK_ATTEMPTS_PER_SYNC = 4
+THREADHALL_COMMAND_HISTORY_VERSION = 2
 threadhall_ack_retry_cursor = 0
+threadhall_stop_runtime_generation = 0
+threadhall_authority_fence_failed = False
+threadhall_remote_command_hold_runtime = False
+threadhall_unverified_stop_runtime = False
+threadhall_config_integrity_failed = False
+threadhall_config_stop_unverified = False
+threadhall_last_valid_config: Optional[Dict[str, Any]] = None
+threadhall_unpaired_device_uuid = str(uuid.uuid4())
 sessions: Dict[str, str] = {}
 loop_processes: List[subprocess.Popen] = []
+audio_process_lock = threading.RLock()
+active_audio_processes: List[subprocess.Popen] = []
+audio_process_groups: Dict[int, int] = {}
 daemon_started = False
 threadhall_sync_started = False
 threadhall_clock_proof: Optional[Dict[str, Any]] = None
@@ -166,7 +183,7 @@ def read_json(path: Path, default: Any) -> Any:
         return default
 
 
-def write_json(path: Path, data: Any) -> None:
+def write_json(path: Path, data: Any, *, require_directory_fsync: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     with temp_path.open("w") as f:
@@ -182,10 +199,12 @@ def write_json(path: Path, data: Any) -> None:
         finally:
             os.close(directory_fd)
     except OSError:
-        # Atomic replacement still protects against partial JSON on filesystems
-        # that do not support directory fsync; surface-specific durability must
-        # be proven on the release controller image.
-        pass
+        if require_directory_fsync:
+            # Claim receipts and STOP fences must never report durable success
+            # when a power loss could restore their previous version.
+            raise
+        # Atomic replacement still protects noncritical settings from partial
+        # JSON on filesystems without directory fsync support.
 
 
 def sanitize_filename(filename: str) -> str:
@@ -841,9 +860,31 @@ def audio_display_name(filename: str) -> str:
 def normalize_threadhall_base_url(value: str) -> str:
     base_url = (value or "").strip().rstrip("/")
     parsed = urllib.parse.urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    hostname = parsed.hostname
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
         raise HTTPException(status_code=400, detail="Enter a valid Threadhall URL")
-    return base_url
+    try:
+        parsed.port
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Enter a valid Threadhall URL")
+    if parsed.scheme == "http":
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = hostname.lower() == "localhost"
+        if not loopback:
+            raise HTTPException(status_code=400, detail="Threadhall requires HTTPS outside local development")
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def configured_district_time_zone(
@@ -870,6 +911,14 @@ def threadhall_manages_current_schedule(config: Dict[str, Any], active: Any) -> 
     return is_threadhall_managed_schedule_name(str(active or "")) or bool(
         isinstance(defaults, dict) and defaults.get("managed") is True
     )
+
+
+def threadhall_managed_schedule_read_only(config: Dict[str, Any]) -> bool:
+    raw = read_json(SCHEDULE_FILE, None)
+    if not isinstance(raw, dict) or not isinstance(raw.get("active"), str):
+        # A damaged schedule file cannot prove that dispatch is local-only.
+        return True
+    return threadhall_manages_current_schedule(config, raw["active"])
 
 
 def record_threadhall_clock_sample(
@@ -932,13 +981,22 @@ def managed_schedule_clock_status(
     *,
     now_utc: Optional[datetime] = None,
     now_monotonic: Optional[float] = None,
+    read_only: bool = False,
 ) -> Dict[str, Any]:
     config = config if config is not None else load_threadhall_config()
     now_utc = now_utc if now_utc is not None else datetime.now(timezone.utc)
     now_monotonic = now_monotonic if now_monotonic is not None else time.monotonic()
     zone_name, zone, zone_error = configured_district_time_zone(config)
-    required = threadhall_manages_current_schedule(
-        config, load_all_schedules().get("active")
+    authority_held = (
+        threadhall_authority_fence_failed
+        or threadhall_config_integrity_failed
+        or threadhall_remote_commands_held(config)
+        or threadhall_unverified_stop_held(config)
+    )
+    required = (
+        threadhall_managed_schedule_read_only(config)
+        if authority_held or read_only
+        else threadhall_manages_current_schedule(config, load_all_schedules().get("active"))
     )
     host_offset = datetime.now().astimezone().utcoffset()
     status: Dict[str, Any] = {
@@ -960,6 +1018,14 @@ def managed_schedule_clock_status(
     if not required:
         status["ready"] = True
         status["reason"] = "local_schedule"
+        return status
+    if authority_held:
+        status["reason"] = (
+            "threadhall_config_reconciliation_required" if threadhall_config_integrity_failed
+            else "threadhall_stop_termination_unverified" if threadhall_unverified_stop_held(config)
+            else "threadhall_remote_commands_held_after_stop" if threadhall_remote_commands_held(config)
+            else "threadhall_authority_reconciliation_required"
+        )
         return status
     if zone_error:
         return status
@@ -994,18 +1060,65 @@ def managed_schedule_clock_status(
     return status
 
 
+def threadhall_config_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="Threadhall pairing file is unreadable or invalid; stop audio and reconcile the controller",
+    )
+
+
+def threadhall_config_failure() -> Dict[str, Any]:
+    global threadhall_config_integrity_failed, threadhall_config_stop_unverified
+    global threadhall_stop_runtime_generation, threadhall_remote_command_hold_runtime
+    if not threadhall_config_integrity_failed:
+        threadhall_config_integrity_failed = True
+        threadhall_remote_command_hold_runtime = True
+        threadhall_stop_runtime_generation += 1
+        clear_threadhall_clock_proof()
+        try:
+            stop_loops()
+        except Exception:
+            threadhall_config_stop_unverified = True
+    if threadhall_last_valid_config is None:
+        raise threadhall_config_unavailable()
+    # The last strictly read or written identity is usable only for STOP-only
+    # polling. All playback and normal pairing-state writes remain fenced.
+    return copy.deepcopy(threadhall_last_valid_config)
+
+
 def load_threadhall_config() -> Dict[str, Any]:
-    if not THREADHALL_CONFIG_FILE.exists() and LEGACY_THREADHALL_CONFIG_FILE.exists():
-        migrated = read_json(LEGACY_THREADHALL_CONFIG_FILE, {})
-        if isinstance(migrated, dict):
-            write_json(THREADHALL_CONFIG_FILE, migrated)
-            try:
-                THREADHALL_CONFIG_FILE.chmod(0o600)
-            except OSError:
-                pass
-    raw = read_json(THREADHALL_CONFIG_FILE, {})
-    if not isinstance(raw, dict):
-        raw = {}
+    global threadhall_last_valid_config
+    if threadhall_config_integrity_failed:
+        return threadhall_config_failure()
+    source = THREADHALL_CONFIG_FILE
+    if not source.exists():
+        if LEGACY_THREADHALL_CONFIG_FILE.exists():
+            source = LEGACY_THREADHALL_CONFIG_FILE
+        elif threadhall_last_valid_config is not None:
+            # A once-paired controller cannot mistake deletion for a fresh
+            # install and silently lose the token needed to fetch STOP.
+            return threadhall_config_failure()
+        else:
+            source = None
+    if source is None:
+        raw: Dict[str, Any] = {}
+    else:
+        try:
+            with source.open() as config_file:
+                raw = json.load(config_file)
+            if not isinstance(raw, dict):
+                raise ValueError("Pairing file must contain an object")
+            if source == LEGACY_THREADHALL_CONFIG_FILE:
+                # Keep the read identity available for STOP if a migration
+                # write fails after the older file was parsed successfully.
+                threadhall_last_valid_config = copy.deepcopy(raw)
+                write_json(THREADHALL_CONFIG_FILE, raw, require_directory_fsync=True)
+                try:
+                    THREADHALL_CONFIG_FILE.chmod(0o600)
+                except OSError:
+                    pass
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            return threadhall_config_failure()
     env_base_url = os.environ.get(
         "THREADHALL_BASE_URL",
         os.environ.get(
@@ -1026,25 +1139,81 @@ def load_threadhall_config() -> Dict[str, Any]:
         raw["token"] = env_token
         raw["enabled"] = True
     raw.setdefault("enabled", bool(raw.get("token")))
-    raw.setdefault("device_uuid", str(uuid.uuid4()))
+    raw.setdefault("device_uuid", threadhall_unpaired_device_uuid)
     raw.setdefault("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS)
-    raw.setdefault("protocol_version", PIBELLS_PROTOCOL_VERSION)
+    raw.setdefault("stop_epoch", 0)
+    # A pre-upgrade pairing did not negotiate execution claims. Preserve v1
+    # until a fresh v2 pairing response explicitly confirms the new protocol.
+    raw.setdefault("protocol_version", 1)
     raw.setdefault("calendar", [])
+    if source is not None:
+        threadhall_last_valid_config = copy.deepcopy(raw)
     return raw
 
 
-def save_threadhall_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def save_threadhall_config(
+    config: Dict[str, Any], *, allow_integrity_repair: bool = False,
+) -> Dict[str, Any]:
+    global threadhall_last_valid_config
+    if threadhall_config_integrity_failed and not allow_integrity_repair:
+        raise threadhall_config_unavailable()
     config = {
         **load_threadhall_config(),
         **config,
     }
     config["poll_seconds"] = max(10, min(300, int(config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS)))
-    write_json(THREADHALL_CONFIG_FILE, config)
+    write_json(THREADHALL_CONFIG_FILE, config, require_directory_fsync=True)
     try:
         THREADHALL_CONFIG_FILE.chmod(0o600)
     except OSError:
         pass
+    threadhall_last_valid_config = copy.deepcopy(config)
     return config
+
+
+def threadhall_stop_epoch(config: Dict[str, Any]) -> int:
+    value = config.get("stop_epoch", 0)
+    if type(value) is not int or value < 0:
+        raise HTTPException(status_code=503, detail="Threadhall STOP ordering state requires reconciliation")
+    return value
+
+
+def threadhall_remote_commands_held(config: Dict[str, Any]) -> bool:
+    return bool(config.get("remote_command_hold") or threadhall_remote_command_hold_runtime)
+
+
+def threadhall_unverified_stop_held(
+    config: Dict[str, Any], history: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> bool:
+    if config.get("unverified_stop_hold") or threadhall_unverified_stop_runtime:
+        return True
+    if history is None and config.get("token") and stored_threadhall_authority(config.get("authority")):
+        try:
+            history = load_threadhall_command_history(config)
+        except Exception:
+            # A missing receipt cannot prove that a past STOP completed.
+            return True
+    return bool(
+        history is not None
+        and any(
+            isinstance(entry, dict) and entry.get("stop_retry_pending") is True
+            for entry in history.values()
+        )
+    )
+
+
+def advance_threadhall_stop_fence(*, hold_remote_commands: bool = False) -> Dict[str, Any]:
+    # Caller holds threadhall_integration_lock. Advance the in-process guard
+    # first so a failed disk write still fences an in-flight claim.
+    global threadhall_stop_runtime_generation, threadhall_remote_command_hold_runtime
+    threadhall_stop_runtime_generation += 1
+    if hold_remote_commands:
+        threadhall_remote_command_hold_runtime = True
+    current = load_threadhall_config()
+    return save_threadhall_config({
+        "stop_epoch": threadhall_stop_epoch(current) + 1,
+        "remote_command_hold": threadhall_remote_commands_held(current),
+    })
 
 
 def stored_threadhall_authority(value: Any) -> Optional[Dict[str, str]]:
@@ -1059,27 +1228,64 @@ def stored_threadhall_authority(value: Any) -> Optional[Dict[str, str]]:
     return authority
 
 
-def safe_threadhall_status() -> Dict[str, Any]:
+def safe_threadhall_status(*, read_only: bool = False) -> Dict[str, Any]:
     config = load_threadhall_config()
     authority = stored_threadhall_authority(config.get("authority"))
     pairing_ready = bool(config.get("token") and authority)
+    remote_command_hold = threadhall_remote_commands_held(config)
+    unverified_stop_hold = threadhall_unverified_stop_held(config)
     return {
-        "enabled": bool(config.get("enabled") and pairing_ready),
+        "enabled": bool(
+            config.get("enabled") and pairing_ready
+            and not threadhall_authority_fence_failed
+            and not threadhall_config_integrity_failed
+            and not remote_command_hold
+            and not unverified_stop_hold
+        ),
         "paired": pairing_ready,
         "base_url": config.get("base_url", ""),
         "device_uuid": config.get("device_uuid", ""),
         "device_name": config.get("device_name", ""),
         "poll_seconds": config.get("poll_seconds", THREADHALL_DEFAULT_POLL_SECONDS),
-        "protocol_version": config.get("protocol_version", PIBELLS_PROTOCOL_VERSION),
+        "protocol_version": config.get("protocol_version", 1),
+        "execution_claim_v1": bool(
+            config.get("enabled")
+            and not threadhall_authority_fence_failed
+            and not threadhall_config_integrity_failed
+            and not remote_command_hold
+            and not unverified_stop_hold
+            and not config.get("pairing_pending")
+            and config.get("protocol_version") == PIBELLS_PROTOCOL_VERSION
+            and config.get("claim_url_template") == THREADHALL_CLAIM_URL_TEMPLATE
+        ),
         "schedule_revision": config.get("schedule_revision", ""),
         "last_sync_at": config.get("last_sync_at"),
-        "schedule_clock": managed_schedule_clock_status(config),
-        "last_error": config.get("last_error", "") or (
+        "schedule_clock": managed_schedule_clock_status(config, read_only=read_only),
+        "remote_commands_held": remote_command_hold,
+        "unverified_stop_hold": unverified_stop_hold,
+        "last_error": (
+            "Threadhall pairing file requires operator reconciliation; audio stop could not be verified."
+            if threadhall_config_integrity_failed and threadhall_config_stop_unverified else
+            "Threadhall pairing file requires operator reconciliation."
+            if threadhall_config_integrity_failed else
+            "Audio termination is unverified; remote commands are held."
+            if unverified_stop_hold else
+            "Remote commands are held after local STOP; re-pair to reconcile."
+            if remote_command_hold else
+            "Threadhall authority change requires operator reconciliation."
+            if threadhall_authority_fence_failed else
+            config.get("last_error", "") or (
             "Re-pair with Threadhall to establish complete controller authority."
             if config.get("token") and not authority
             else ""
+            )
         ),
     }
+
+
+class ThreadhallRejectRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
 
 
 def threadhall_request(
@@ -1103,8 +1309,13 @@ def threadhall_request(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    is_claim = path.startswith("/api/pibells/v2/commands/") and path.endswith("/claim")
+    # Never forward a device bearer or pairing payload to a redirect target.
+    open_request = urllib.request.build_opener(ThreadhallRejectRedirect()).open
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with open_request(request, timeout=12) as response:
+            if is_claim and response.getcode() != 200:
+                raise HTTPException(status_code=502, detail="Threadhall claim did not return HTTP 200")
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
@@ -1132,11 +1343,10 @@ def normalize_threadhall_authority(value: Any) -> Dict[str, str]:
 
 
 def clear_threadhall_authority_state(config: Dict[str, Any], reason: str) -> None:
-    clear_threadhall_clock_proof()
-    stop_loops()
-    purge_threadhall_managed_schedules()
-    save_threadhall_config({
+    fence_and_disable_threadhall_authority(config, {
         "enabled": False,
+        "pairing_pending": False,
+        "pairing_epoch": str(uuid.uuid4()),
         "base_url": config.get("base_url", ""),
         "token": "",
         "authority": {},
@@ -1145,20 +1355,60 @@ def clear_threadhall_authority_state(config: Dict[str, Any], reason: str) -> Non
         "calendar": [],
         "calendar_defaults": {},
         "district_time_zone": "",
+        "claim_url_template": "",
         "last_sync_at": None,
         "last_error": reason,
     })
-    save_threadhall_command_history({})
+    # Retain every authority's receipts even when a pairing response is
+    # ambiguous. A future pair with the same authority must not replay them.
+
+
+def fence_and_disable_threadhall_authority(
+    config: Dict[str, Any], updates: Dict[str, Any],
+) -> None:
+    # Caller holds threadhall_integration_lock. Persist disabled authority
+    # before attempting STOP, which itself may fail on a resistant player.
+    global threadhall_authority_fence_failed
+    global threadhall_config_integrity_failed, threadhall_config_stop_unverified
+    threadhall_authority_fence_failed = True
+    clear_threadhall_clock_proof()
+    fence_error = None
+    disable_error = None
+    stop_error = None
+    try:
+        advance_threadhall_stop_fence()
+    except Exception as exc:
+        fence_error = exc
+    try:
+        save_threadhall_config(updates, allow_integrity_repair=True)
+    except Exception as exc:
+        disable_error = exc
+    else:
+        # A strictly durable disabled pairing supersedes any failed epoch
+        # write; a fresh process cannot revive the previous device token.
+        threadhall_authority_fence_failed = False
+        threadhall_config_integrity_failed = False
+        threadhall_config_stop_unverified = False
+    try:
+        stop_loops()
+    except Exception as exc:
+        stop_error = exc
+    if disable_error is None:
+        purge_threadhall_managed_schedules()
+    if fence_error or disable_error or stop_error:
+        raise HTTPException(
+            status_code=503,
+            detail="Threadhall authority change or audio termination requires reconciliation",
+        )
 
 
 def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
-    with threadhall_integration_lock:
+    # Only pair requests serialize each other. The network wait never owns the
+    # integration lock, so local STOP and schedule dispatch stay responsive.
+    with threadhall_pair_request_lock:
         environment_token = os.environ.get(
             "THREADHALL_PIBELLS_TOKEN",
-            os.environ.get(
-                f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_DEVICE_TOKEN",
-                "",
-            ),
+            os.environ.get(f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_DEVICE_TOKEN", ""),
         ).strip()
         if environment_token:
             raise HTTPException(
@@ -1168,50 +1418,96 @@ def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
         requested_base_url = normalize_threadhall_base_url(body.base_url)
         environment_base_url = os.environ.get(
             "THREADHALL_BASE_URL",
-            os.environ.get(
-                f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_BASE_URL",
-                "",
-            ),
+            os.environ.get(f"PIBELLS_{RETIRED_INTEGRATION_NAME.upper()}_BASE_URL", ""),
         ).strip()
-        if (
-            environment_base_url
-            and normalize_threadhall_base_url(environment_base_url)
-            != requested_base_url
-        ):
+        if environment_base_url and normalize_threadhall_base_url(environment_base_url) != requested_base_url:
             raise HTTPException(
                 status_code=409,
                 detail="Pairing URL must match the environment-managed Threadhall URL.",
             )
-        config = load_threadhall_config()
-        config["base_url"] = requested_base_url
-        device_uuid = str(config.get("device_uuid") or uuid.uuid4())
-        name = (body.name or config.get("device_name") or socket.gethostname() or "PiBells Controller").strip()
-        local_ip = get_local_ip()
-        payload = {
-            "protocol_version": PIBELLS_PROTOCOL_VERSION,
-            "pairing_code": body.pairing_code,
-            "device_uuid": device_uuid,
-            "name": name,
-            "local_url": f"http://{local_ip}" if local_ip != "0.0.0.0" else "",
-            "hostname": socket.gethostname(),
-            "ip_address": local_ip,
-            "version": PIBELLS_AGENT_VERSION,
-            "capabilities": {
-                "barix": True,
-                "local_audio": True,
-                "targeted_outputs": True,
-                "outbound_threadhall_sync": True,
-                "revisioned_schedules": True,
-                "calendar_exceptions": True,
-                "calendar_defaults": True,
-                "effective_schedule_evidence": True,
-                "idempotent_commands": True,
-            },
-            "status": dashboard(),
-        }
+        with threadhall_integration_lock:
+            config_file_exists = (
+                THREADHALL_CONFIG_FILE.exists() or LEGACY_THREADHALL_CONFIG_FILE.exists()
+            )
+            fresh_install = not any(path.exists() for path in (
+                THREADHALL_CONFIG_FILE,
+                LEGACY_THREADHALL_CONFIG_FILE,
+                THREADHALL_COMMAND_HISTORY_FILE,
+                LEGACY_THREADHALL_COMMAND_HISTORY_FILE,
+            ))
+            prior_config = load_threadhall_config()
+            device_uuid = str(prior_config.get("device_uuid") or uuid.uuid4())
+            bootstrap = None
+            if fresh_install:
+                bootstrap = save_threadhall_history_bootstrap(device_uuid)
+            elif THREADHALL_COMMAND_HISTORY_FILE.exists():
+                if stored_threadhall_authority(prior_config.get("authority")):
+                    load_threadhall_command_history(prior_config)
+                else:
+                    envelope = read_threadhall_history_envelope(
+                        THREADHALL_COMMAND_HISTORY_FILE, allow_bootstrap=True,
+                    )
+                    if not envelope["partitions"]:
+                        if (
+                            LEGACY_THREADHALL_COMMAND_HISTORY_FILE.exists()
+                            or prior_config.get("token")
+                            or stored_threadhall_authority(prior_config.get("authority"))
+                        ):
+                            raise threadhall_history_unavailable()
+                        bootstrap = envelope["bootstrap"]
+                        if config_file_exists and (
+                            prior_config.get("history_bootstrap_epoch") != bootstrap["epoch"]
+                            or prior_config.get("device_uuid") != bootstrap["device_uuid"]
+                        ):
+                            raise threadhall_history_unavailable()
+                        device_uuid = bootstrap["device_uuid"]
+                        fresh_install = True
+            else:
+                raise threadhall_history_unavailable()
+            if bootstrap is not None:
+                prior_config["history_bootstrap_epoch"] = bootstrap["epoch"]
+                prior_config["device_uuid"] = device_uuid
+            name = (body.name or prior_config.get("device_name") or socket.gethostname() or "PiBells Controller").strip()
+            pairing_epoch = str(uuid.uuid4())
+            clear_threadhall_clock_proof()
+            save_threadhall_config({
+                "enabled": False,
+                "pairing_pending": True,
+                "pairing_epoch": pairing_epoch,
+                "device_uuid": device_uuid,
+                "history_bootstrap_epoch": bootstrap["epoch"] if bootstrap else prior_config.get("history_bootstrap_epoch", ""),
+                "last_error": "Pairing is in progress; managed dispatch is paused.",
+            }, allow_integrity_repair=True)
+            pairing_stop_generation = threadhall_stop_runtime_generation
+
+        request_config = {**prior_config, "base_url": requested_base_url}
         try:
+            local_ip = get_local_ip()
+            payload = {
+                "protocol_version": PIBELLS_PROTOCOL_VERSION,
+                "pairing_code": body.pairing_code,
+                "device_uuid": device_uuid,
+                "name": name,
+                "local_url": f"http://{local_ip}" if local_ip != "0.0.0.0" else "",
+                "hostname": socket.gethostname(),
+                "ip_address": local_ip,
+                "version": PIBELLS_AGENT_VERSION,
+                "capabilities": {
+                    "barix": True,
+                    "local_audio": True,
+                    "targeted_outputs": True,
+                    "outbound_threadhall_sync": True,
+                    "revisioned_schedules": True,
+                    "calendar_exceptions": True,
+                    "calendar_defaults": True,
+                    "effective_schedule_evidence": True,
+                    "idempotent_commands": True,
+                    "execution_claim_v1": True,
+                },
+                "status": dashboard(),
+            }
             response = threadhall_request(
-                config,
+                request_config,
                 "api/pibells/v1/pair",
                 method="POST",
                 payload=payload,
@@ -1226,61 +1522,106 @@ def pair_threadhall(body: ThreadhallPairRequest) -> Dict[str, Any]:
             token = raw_token.strip()
             authority = normalize_threadhall_authority(data.get("authority"))
             response_device = data.get("device")
-            if (
-                not isinstance(response_device, dict)
-                or response_device.get("id") != authority["device_id"]
-            ):
-                raise HTTPException(
-                    status_code=502,
-                    detail="Threadhall returned inconsistent pairing authority",
-                )
-            protocol_version = int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION)
-            if protocol_version < 1 or protocol_version > PIBELLS_PROTOCOL_VERSION:
-                raise HTTPException(
-                    status_code=502,
-                    detail="Threadhall returned an unsupported pairing protocol",
-                )
+            if not isinstance(response_device, dict) or response_device.get("id") != authority["device_id"]:
+                raise HTTPException(status_code=502, detail="Threadhall returned inconsistent pairing authority")
+            protocol_version = data.get("protocol_version")
+            if protocol_version != PIBELLS_PROTOCOL_VERSION:
+                raise HTTPException(status_code=502, detail="Threadhall did not confirm the execution-claim protocol")
+            claim_url_template = data.get("claim_url_template")
+            if claim_url_template != THREADHALL_CLAIM_URL_TEMPLATE:
+                raise HTTPException(status_code=502, detail="Threadhall did not provide the execution-claim route")
             poll_seconds = int(data.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS)
         except Exception as exc:
-            clear_threadhall_authority_state(
-                config,
-                "Pairing stopped because the resulting controller authority could not be confirmed.",
-            )
+            with threadhall_integration_lock:
+                current = load_threadhall_config()
+                if current.get("pairing_epoch") == pairing_epoch and current.get("pairing_pending"):
+                    clear_threadhall_authority_state(
+                        request_config,
+                        "Pairing stopped because the resulting controller authority could not be confirmed.",
+                    )
             if isinstance(exc, HTTPException):
                 raise
-            raise HTTPException(
-                status_code=502,
-                detail="Threadhall returned invalid pairing data",
-            ) from exc
-        same_authority = bool(
-            config.get("token")
-            and isinstance(config.get("authority"), dict)
-            and config.get("authority") == authority
-        )
-        clear_threadhall_clock_proof()
-        stop_loops()
-        if not same_authority:
-            purge_threadhall_managed_schedules()
-            save_threadhall_command_history({})
-        save_threadhall_config({
-            "enabled": True,
-            "base_url": config["base_url"],
-            "token": token,
-            "authority": authority,
-            "device_uuid": device_uuid,
-            "device_name": name,
-            "protocol_version": protocol_version,
-            "poll_seconds": poll_seconds,
-            "schedule_revision": config.get("schedule_revision", "") if same_authority else "",
-            "managed_schedule_hash": config.get("managed_schedule_hash", "") if same_authority else "",
-            "calendar": config.get("calendar", []) if same_authority else [],
-            "calendar_defaults": config.get("calendar_defaults", {}) if same_authority else {},
-            "district_time_zone": config.get("district_time_zone", "") if same_authority else "",
-            "paired_at": datetime.now().isoformat(timespec="seconds"),
-            "last_sync_at": None,
-            "last_error": "",
-        })
-        return safe_threadhall_status()
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid pairing data") from exc
+
+        with threadhall_integration_lock:
+            current = load_threadhall_config()
+            if current.get("pairing_epoch") != pairing_epoch or not current.get("pairing_pending"):
+                raise HTTPException(status_code=409, detail="Pairing changed before the response could be applied")
+            if threadhall_stop_runtime_generation != pairing_stop_generation:
+                clear_threadhall_authority_state(
+                    request_config,
+                    "Pairing stopped because STOP or a pairing-file failure occurred during the request.",
+                )
+                raise HTTPException(status_code=409, detail="STOP or pairing-file failure interrupted pairing; re-pair to reconcile")
+            target_config = {
+                **request_config,
+                "token": token,
+                "authority": authority,
+                "device_uuid": device_uuid,
+            }
+            same_authority = bool(
+                prior_config.get("token")
+                and threadhall_history_scope(prior_config) == threadhall_history_scope(target_config)
+            )
+            try:
+                initialize_threadhall_command_history(target_config, fresh_install=fresh_install)
+                clear_threadhall_clock_proof()
+                stop_loops()
+                if stored_threadhall_authority(prior_config.get("authority")):
+                    prior_history = load_threadhall_command_history(prior_config)
+                    if any(
+                        isinstance(entry, dict) and entry.get("stop_retry_pending") is True
+                        for entry in prior_history.values()
+                    ):
+                        verified_at = datetime.now(timezone.utc).isoformat()
+                        for entry in prior_history.values():
+                            if isinstance(entry, dict) and entry.get("stop_retry_pending") is True:
+                                entry["stop_retry_pending"] = False
+                                entry["stop_verified_at"] = verified_at
+                                entry["pending_ack"] = False
+                        save_threadhall_command_history(prior_history, prior_config)
+                if not same_authority:
+                    purge_threadhall_managed_schedules()
+                save_threadhall_config({
+                    "enabled": True,
+                    "pairing_pending": False,
+                    "pairing_epoch": pairing_epoch,
+                    "base_url": requested_base_url,
+                    "token": token,
+                    "authority": authority,
+                    "device_uuid": device_uuid,
+                    "device_name": name,
+                    "protocol_version": protocol_version,
+                    "claim_url_template": claim_url_template,
+                    "remote_command_hold": False,
+                    "unverified_stop_hold": False,
+                    "history_bootstrap_epoch": "",
+                    "poll_seconds": poll_seconds,
+                    "schedule_revision": prior_config.get("schedule_revision", "") if same_authority else "",
+                    "managed_schedule_hash": prior_config.get("managed_schedule_hash", "") if same_authority else "",
+                    "calendar": prior_config.get("calendar", []) if same_authority else [],
+                    "calendar_defaults": prior_config.get("calendar_defaults", {}) if same_authority else {},
+                    "district_time_zone": prior_config.get("district_time_zone", "") if same_authority else "",
+                    "paired_at": datetime.now().isoformat(timespec="seconds"),
+                    "last_sync_at": None,
+                    "last_error": "",
+                }, allow_integrity_repair=True)
+            except Exception:
+                clear_threadhall_authority_state(
+                    request_config,
+                    "Pairing stopped because local authority or command history could not be saved.",
+                )
+                raise
+            global threadhall_authority_fence_failed
+            global threadhall_remote_command_hold_runtime
+            global threadhall_unverified_stop_runtime
+            global threadhall_config_integrity_failed, threadhall_config_stop_unverified
+            threadhall_authority_fence_failed = False
+            threadhall_remote_command_hold_runtime = False
+            threadhall_unverified_stop_runtime = False
+            threadhall_config_integrity_failed = False
+            threadhall_config_stop_unverified = False
+            return safe_threadhall_status()
 
 
 def audio_file_for_key(sound_key: str) -> str:
@@ -1588,71 +1929,220 @@ def acknowledge_threadhall_command(
     summary: str,
     detail: Optional[Dict[str, Any]] = None,
     occurred_at: Optional[str] = None,
+    claim_id: Optional[str] = None,
 ) -> None:
+    acknowledgement = {
+        "status": status,
+        "summary": summary,
+        "detail": detail or {},
+        "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
+    }
+    if claim_id is not None:
+        acknowledgement["claim_id"] = claim_id
     threadhall_request(
         config,
-        f"api/pibells/v1/commands/{command_id}/ack",
+        f"api/pibells/v1/commands/{urllib.parse.quote(str(command_id), safe='')}/ack",
         method="POST",
-        payload={
-            "status": status,
-            "summary": summary,
-            "detail": detail or {},
-            "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
-        },
+        payload=acknowledgement,
     )
 
 
-def load_threadhall_command_history() -> Dict[str, Dict[str, Any]]:
-    # A retired history file can be stale after an earlier migration. If the
-    # canonical ledger disappears, never replace it with that older copy.
-    return read_threadhall_command_history_file(THREADHALL_COMMAND_HISTORY_FILE)
+def threadhall_history_scope(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    authority = stored_threadhall_authority(config.get("authority"))
+    base_url = str(config.get("base_url") or "").strip()
+    device_uuid = str(config.get("device_uuid") or "").strip()
+    if not authority or not base_url or not device_uuid:
+        return None
+    return {
+        "base_url": base_url,
+        "device_uuid": device_uuid,
+        "authority": authority,
+    }
 
 
-def read_threadhall_command_history_file(path: Path) -> Dict[str, Dict[str, Any]]:
-    detail = (
-        "Threadhall command history is unavailable or invalid; physical commands "
-        "are paused pending operator review."
+def threadhall_history_scope_key(scope: Dict[str, Any]) -> str:
+    canonical = json.dumps(scope, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def threadhall_history_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=(
+            "Threadhall command history is unavailable or invalid; physical commands "
+            "are paused pending operator review."
+        ),
     )
+
+
+def threadhall_history_reconciliation_required(reason: str) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=f"{reason} Physical commands are paused pending operator reconciliation.",
+    )
+
+
+def validate_threadhall_history_entries(raw: Any) -> bool:
+    return isinstance(raw, dict) and all(
+        isinstance(command_id, str)
+        and bool(command_id)
+        and isinstance(outcome, dict)
+        and bool(outcome)
+        for command_id, outcome in raw.items()
+    )
+
+
+def read_threadhall_history_envelope(
+    path: Path, *, allow_bootstrap: bool = False,
+) -> Dict[str, Any]:
+    # The old flat file evicted completed command IDs. Even when a pairing is
+    # known, its contents cannot prove that an old offer has never executed.
     try:
         with path.open() as history_file:
             raw = json.load(history_file)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=503, detail=detail) from exc
-    if not isinstance(raw, dict) or any(
-        not command_id or not isinstance(outcome, dict) or not outcome
-        for command_id, outcome in raw.items()
+        raise threadhall_history_unavailable() from exc
+    if isinstance(raw, dict) and raw.get("version") == THREADHALL_COMMAND_HISTORY_VERSION:
+        partitions = raw.get("partitions")
+        if not isinstance(partitions, dict):
+            raise threadhall_history_unavailable()
+        if not partitions:
+            bootstrap = raw.get("bootstrap")
+            if not (
+                allow_bootstrap
+                and set(raw) == {"version", "partitions", "bootstrap"}
+                and isinstance(bootstrap, dict)
+                and set(bootstrap) == {"epoch", "device_uuid"}
+                and isinstance(bootstrap.get("epoch"), str)
+                and isinstance(bootstrap.get("device_uuid"), str)
+            ):
+                raise threadhall_history_unavailable()
+            try:
+                uuid.UUID(bootstrap["epoch"])
+                uuid.UUID(bootstrap["device_uuid"])
+            except (ValueError, AttributeError) as exc:
+                raise threadhall_history_unavailable() from exc
+            return raw
+        for key, partition in partitions.items():
+            if not isinstance(key, str) or not isinstance(partition, dict):
+                raise threadhall_history_unavailable()
+            scope = partition.get("scope")
+            if (
+                not isinstance(scope, dict)
+                or threadhall_history_scope(scope) != scope
+                or threadhall_history_scope_key(scope) != key
+                or not validate_threadhall_history_entries(partition.get("entries"))
+            ):
+                raise threadhall_history_unavailable()
+        return raw
+    if isinstance(raw, dict):
+        raise threadhall_history_reconciliation_required(
+            "The older command receipt file does not prove complete execution history."
+        )
+    raise threadhall_history_unavailable()
+
+
+def save_threadhall_history_bootstrap(device_uuid: str) -> Dict[str, Any]:
+    # Create the first durable receipt state before saving a pending pairing.
+    # A failed first request can then retry without treating an absent ledger
+    # as evidence that no physical command has ever run.
+    bootstrap = {"epoch": str(uuid.uuid4()), "device_uuid": device_uuid}
+    write_json(THREADHALL_COMMAND_HISTORY_FILE, {
+        "version": THREADHALL_COMMAND_HISTORY_VERSION,
+        "partitions": {},
+        "bootstrap": bootstrap,
+    }, require_directory_fsync=True)
+    try:
+        THREADHALL_COMMAND_HISTORY_FILE.chmod(0o600)
+    except OSError:
+        pass
+    return bootstrap
+
+
+def initialize_threadhall_command_history(config: Dict[str, Any], *, fresh_install: bool = False) -> None:
+    scope = threadhall_history_scope(config)
+    if not scope:
+        raise threadhall_history_unavailable()
+    if THREADHALL_COMMAND_HISTORY_FILE.exists():
+        envelope = read_threadhall_history_envelope(
+            THREADHALL_COMMAND_HISTORY_FILE, allow_bootstrap=fresh_install,
+        )
+        if not envelope["partitions"]:
+            bootstrap = envelope["bootstrap"]
+            if (
+                not fresh_install
+                or config.get("history_bootstrap_epoch") != bootstrap["epoch"]
+                or config.get("device_uuid") != bootstrap["device_uuid"]
+            ):
+                raise threadhall_history_unavailable()
+    elif fresh_install:
+        envelope = {"version": THREADHALL_COMMAND_HISTORY_VERSION, "partitions": {}}
+    else:
+        raise threadhall_history_unavailable()
+    key = threadhall_history_scope_key(scope)
+    if any(
+        partition["scope"]["authority"] == scope["authority"] and prior_key != key
+        for prior_key, partition in envelope["partitions"].items()
     ):
-        raise HTTPException(status_code=503, detail=detail)
-    return raw
+        raise threadhall_history_reconciliation_required(
+            "The same pairing authority has receipts under another URL or controller identity."
+        )
+    if key not in envelope["partitions"]:
+        envelope["partitions"][key] = {"scope": scope, "entries": {}}
+        envelope.pop("bootstrap", None)
+        write_json(THREADHALL_COMMAND_HISTORY_FILE, envelope, require_directory_fsync=True)
+        try:
+            THREADHALL_COMMAND_HISTORY_FILE.chmod(0o600)
+        except OSError:
+            pass
 
 
-def save_threadhall_command_history(history: Dict[str, Dict[str, Any]]) -> None:
-    valid_entries = [
-        (str(command_id), outcome)
-        for command_id, outcome in history.items()
-        if isinstance(outcome, dict)
-    ]
-    pending_entries = [
-        item for item in valid_entries if item[1].get("pending_ack") is True
-    ]
-    completed_entries = [
-        item for item in valid_entries if item[1].get("pending_ack") is not True
-    ]
-    pending_entries.sort(
-        key=lambda item: str(item[1].get("occurred_at") or ""),
-        reverse=True,
-    )
-    completed_entries.sort(
-        key=lambda item: str(item[1].get("occurred_at") or ""),
-        reverse=True,
-    )
-    # Never evict an outcome that has not reached Threadhall. Completed
-    # receipts are the only entries eligible for the bounded history tail.
-    completed_limit = max(0, 500 - len(pending_entries))
-    write_json(
-        THREADHALL_COMMAND_HISTORY_FILE,
-        dict(pending_entries + completed_entries[:completed_limit]),
-    )
+def load_threadhall_command_history(
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    # A retired history file can be stale after an earlier migration. If the
+    # canonical ledger disappears, never replace it with that older copy.
+    config = config or load_threadhall_config()
+    envelope = read_threadhall_history_envelope(THREADHALL_COMMAND_HISTORY_FILE)
+    scope = threadhall_history_scope(config)
+    if not scope:
+        return {}
+    partition = envelope["partitions"].get(threadhall_history_scope_key(scope))
+    if not isinstance(partition, dict):
+        raise threadhall_history_unavailable()
+    return dict(partition["entries"])
+
+
+def read_threadhall_command_history_file(path: Path) -> Dict[str, Dict[str, Any]]:
+    envelope = read_threadhall_history_envelope(path)
+    scope = threadhall_history_scope(load_threadhall_config())
+    if not scope:
+        return {}
+    partition = envelope["partitions"].get(threadhall_history_scope_key(scope))
+    if not isinstance(partition, dict):
+        raise threadhall_history_unavailable()
+    return dict(partition["entries"])
+
+
+def save_threadhall_command_history(
+    history: Dict[str, Dict[str, Any]],
+    config: Optional[Dict[str, Any]] = None,
+) -> None:
+    config = config or load_threadhall_config()
+    scope = threadhall_history_scope(config)
+    if not scope or not validate_threadhall_history_entries(history):
+        raise threadhall_history_unavailable()
+    envelope = read_threadhall_history_envelope(THREADHALL_COMMAND_HISTORY_FILE)
+    key = threadhall_history_scope_key(scope)
+    partition = envelope["partitions"].get(key)
+    if not isinstance(partition, dict):
+        raise threadhall_history_unavailable()
+    if not set(partition["entries"]).issubset(history):
+        raise threadhall_history_unavailable()
+    # Never discard a physical outcome solely because it is old. Without a
+    # server-backed claim, an old command may still be reoffered after reboot.
+    partition["entries"] = dict(history)
+    write_json(THREADHALL_COMMAND_HISTORY_FILE, envelope, require_directory_fsync=True)
     try:
         THREADHALL_COMMAND_HISTORY_FILE.chmod(0o600)
     except OSError:
@@ -1672,7 +2162,7 @@ def threadhall_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
     ]
     status = dashboard()
     return {
-        "protocol_version": PIBELLS_PROTOCOL_VERSION,
+        "protocol_version": int(config.get("protocol_version") or 1),
         "device_uuid": str(config.get("device_uuid") or ""),
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "version": PIBELLS_AGENT_VERSION,
@@ -1691,10 +2181,32 @@ def threadhall_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
             "calendar_defaults": True,
             "effective_schedule_evidence": True,
             "idempotent_commands": True,
+            "execution_claim_v1": bool(
+                config.get("protocol_version") == PIBELLS_PROTOCOL_VERSION
+                and config.get("claim_url_template") == THREADHALL_CLAIM_URL_TEMPLATE
+            ),
         },
         "telemetry": status,
         "audio_manifest": audio_manifest,
         "recent_events": [],
+    }
+
+
+def threadhall_stop_only_sync_payload(config: Dict[str, Any]) -> Dict[str, Any]:
+    # Threadhall's sync schema requires these fields and supplies defaults for
+    # all telemetry fields. Avoid schedule normalization, device probes, and
+    # local writes when those paths are broken but remote STOP must be fetched.
+    return {
+        "protocol_version": int(config.get("protocol_version") or 1),
+        "device_uuid": str(config.get("device_uuid") or ""),
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "capabilities": {
+            "execution_claim_v1": bool(
+                config.get("protocol_version") == PIBELLS_PROTOCOL_VERSION
+                and config.get("claim_url_template") == THREADHALL_CLAIM_URL_TEMPLATE
+            ),
+        },
+        "telemetry": {"stop_only_poll": True},
     }
 
 
@@ -1801,6 +2313,7 @@ def deliver_threadhall_outcome(
             summary,
             detail,
             occurred_at,
+            outcome.get("claim_id") if isinstance(outcome.get("claim_id"), str) else None,
         )
         outcome["pending_ack"] = False
         return None
@@ -1813,22 +2326,290 @@ def threadhall_connection_identity(config: Dict[str, Any]) -> Tuple[str, ...]:
     authority = stored_threadhall_authority(config.get("authority")) or {}
     return (
         str(bool(config.get("enabled"))),
+        str(bool(config.get("pairing_pending"))),
+        str(config.get("pairing_epoch") or ""),
         str(config.get("base_url") or ""),
         str(config.get("token") or ""),
         str(config.get("device_uuid") or ""),
+        str(config.get("protocol_version") or ""),
+        str(config.get("claim_url_template") or ""),
         str(authority.get("district_id") or ""),
         str(authority.get("school_id") or ""),
         str(authority.get("device_id") or ""),
     )
 
 
+def validated_threadhall_claim(
+    response: Any,
+    offer: Dict[str, Any],
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    if not isinstance(response, dict) or response.get("ok") is not True or response.get("execute") is not True:
+        return None
+    claim_id = response.get("claim_id")
+    claimed_at = response.get("claimed_at")
+    command = response.get("command")
+    if not isinstance(claim_id, str) or not isinstance(claimed_at, str) or not isinstance(command, dict):
+        return None
+    try:
+        uuid.UUID(claim_id)
+        claimed_time = datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if claimed_time.tzinfo is None:
+        return None
+    if (
+        command.get("id") != offer["id"]
+        or command.get("type") != offer["type"]
+        or not isinstance(command.get("payload"), dict)
+        or command.get("expires_at") != offer.get("expires_at")
+    ):
+        return None
+    return claim_id, command
+
+
+def claim_and_execute_threadhall_offer(
+    config: Dict[str, Any],
+    identity: Tuple[str, ...],
+    offer: Dict[str, Any],
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    command_id = offer["id"]
+    with threadhall_integration_lock:
+        if threadhall_authority_fence_failed or threadhall_config_integrity_failed:
+            return None
+        current_config = load_threadhall_config()
+        if threadhall_connection_identity(current_config) != identity:
+            return None
+        claimed_stop_epoch = threadhall_stop_epoch(current_config)
+        claimed_stop_runtime_generation = threadhall_stop_runtime_generation
+        history = load_threadhall_command_history(config)
+        if command_id in history:
+            return None
+        if (
+            offer.get("_stop_epoch_at_offer") != claimed_stop_epoch
+            or offer.get("_stop_runtime_generation_at_offer") != claimed_stop_runtime_generation
+        ):
+            history[command_id] = {
+                "status": "failed",
+                "summary": "STOP superseded the offer before its execution claim",
+                "detail": {"stopped_before_claim": True},
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+                "pending_ack": False,
+                "claim_state": "superseded_before_claim",
+            }
+            save_threadhall_command_history(history, config)
+            save_threadhall_config({
+                "last_error": "A command offer was superseded by STOP; operator reconciliation is required.",
+            })
+            return None
+        if threadhall_remote_commands_held(current_config):
+            history[command_id] = {
+                "status": "failed",
+                "summary": "Local STOP holds remote commands pending operator reconciliation",
+                "detail": {"remote_commands_held": True},
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+                "pending_ack": False,
+                "claim_state": "held_after_local_stop",
+            }
+            save_threadhall_command_history(history, config)
+            return None
+        if threadhall_unverified_stop_held(current_config, history):
+            history[command_id] = {
+                "status": "failed",
+                "summary": "Audio termination is unverified; command was not claimed",
+                "detail": {"stop_termination_unverified": True},
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+                "pending_ack": False,
+                "claim_state": "held_after_unverified_stop",
+            }
+            save_threadhall_command_history(history, config)
+            return None
+        # Persist before sending the one-shot request. A lost response may mean
+        # Threadhall consumed its only grant, so no later sync can retry it.
+        intent = {
+            "status": "failed",
+            "summary": "Execution claim outcome is unknown; no physical action was authorized",
+            "detail": {"claim_outcome_unknown": True},
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "pending_ack": False,
+            "claim_state": "requested",
+            "stop_epoch_at_claim": claimed_stop_epoch,
+        }
+        history[command_id] = intent
+        save_threadhall_command_history(history, config)
+        save_threadhall_config({
+            "last_error": "Execution claim outcome is unresolved; operator reconciliation is required.",
+        })
+
+    if config.get("claim_url_template") != THREADHALL_CLAIM_URL_TEMPLATE:
+        return None
+    claim_path = THREADHALL_CLAIM_URL_TEMPLATE.replace(
+        "{command_id}", urllib.parse.quote(command_id, safe=""),
+    )
+    try:
+        response = threadhall_request(
+            config,
+            claim_path,
+            method="POST",
+            payload={
+                "protocol_version": PIBELLS_PROTOCOL_VERSION,
+                "device_uuid": str(config.get("device_uuid") or ""),
+            },
+        )
+    except Exception:
+        # Timeouts, HTTP errors, and retries never authorize physical action.
+        return None
+    grant = validated_threadhall_claim(response, offer)
+    if grant is None:
+        return None
+    claim_id, command = grant
+    with threadhall_integration_lock:
+        current_config = load_threadhall_config()
+        current_identity = threadhall_connection_identity(current_config)
+        history = load_threadhall_command_history(config)
+        current = history.get(command_id)
+        if not isinstance(current, dict) or current.get("claim_state") != "requested":
+            return None
+        if (
+            current_identity != identity
+            or threadhall_authority_fence_failed
+            or threadhall_config_integrity_failed
+        ):
+            current.update({
+                "claim_id": claim_id,
+                "claim_state": "claimed_after_authority_change",
+            })
+            save_threadhall_command_history(history, config)
+            return None
+        if (
+            current.get("stop_epoch_at_claim") != claimed_stop_epoch
+            or threadhall_stop_epoch(current_config) != claimed_stop_epoch
+            or threadhall_stop_runtime_generation != claimed_stop_runtime_generation
+            or threadhall_remote_commands_held(current_config)
+            or threadhall_unverified_stop_held(current_config, history)
+        ):
+            current.update({
+                "claim_id": claim_id,
+                "claim_state": "claimed_after_stop",
+                "summary": "STOP superseded the claimed command before controller action",
+                "detail": {"stopped_before_execution": True},
+                "pending_ack": False,
+            })
+            save_threadhall_command_history(history, config)
+            return None
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        outcome: Dict[str, Any] = {
+            "status": "failed",
+            "summary": "Controller execution was interrupted; physical outcome is unknown",
+            "detail": {"execution_outcome_unknown": True},
+            "occurred_at": occurred_at,
+            # Unknown physical outcomes are held locally for reconciliation;
+            # they must not be sent as a definitive FAILED callback.
+            "pending_ack": False,
+            "claim_id": claim_id,
+            "claim_state": "execution_unknown",
+        }
+        history[command_id] = outcome
+        save_threadhall_command_history(history, config)
+        if command_expired_before_execution(command):
+            outcome.update({
+                "summary": "Claimed command expired before controller execution",
+                "detail": {"expired_before_execution": True},
+                "pending_ack": True,
+                "claim_state": "completed",
+            })
+        else:
+            try:
+                summary = run_threadhall_command(command)
+                outcome.update({
+                    "status": "acknowledged",
+                    "summary": str(summary)[:500],
+                    "detail": {},
+                    "pending_ack": True,
+                    "claim_state": "completed",
+                })
+            except Exception as exc:
+                outcome.update({
+                    "status": "failed",
+                    "summary": "Controller action raised an error; physical outcome is unknown",
+                    "detail": {
+                        "execution_outcome_unknown": True,
+                        "local_error": str(getattr(exc, "detail", exc))[:300],
+                    },
+                    "pending_ack": False,
+                    "claim_state": "execution_unknown",
+                })
+        outcome["occurred_at"] = datetime.now(timezone.utc).isoformat()
+        history[command_id] = outcome
+        save_threadhall_command_history(history, config)
+        unresolved = any(
+            entry.get("claim_state") in {"requested", "execution_unknown", "claimed_after_authority_change", "claimed_after_stop", "superseded_before_claim", "held_after_local_stop", "held_after_unverified_stop", "not_claimed"}
+            for entry in history.values()
+            if isinstance(entry, dict)
+        )
+        save_threadhall_config({
+            "last_error": (
+                "Execution claim or physical outcome is unresolved; operator reconciliation is required."
+                if unresolved else ""
+            ),
+        })
+        return (command_id, dict(outcome)) if outcome["pending_ack"] is True else None
+
+
+def process_threadhall_claim_offers(
+    config: Dict[str, Any],
+    identity: Tuple[str, ...],
+    offers: List[Dict[str, Any]],
+) -> List[Tuple[str, Dict[str, Any]]]:
+    outcomes: List[Tuple[str, Dict[str, Any]]] = []
+    for offer in offers:
+        outcome = claim_and_execute_threadhall_offer(config, identity, offer)
+        if outcome is not None:
+            outcomes.append(outcome)
+    return outcomes
+
+
+def process_threadhall_claim_offers_in_worker(
+    config: Dict[str, Any],
+    identity: Tuple[str, ...],
+    offers: List[Dict[str, Any]],
+) -> None:
+    try:
+        outcomes = process_threadhall_claim_offers(config, identity, offers)
+        if outcomes:
+            _deliver_threadhall_ack_batch({}, config, identity, outcomes)
+    except Exception as exc:
+        with threadhall_integration_lock:
+            if threadhall_connection_identity(load_threadhall_config()) == identity:
+                save_threadhall_config({"last_error": str(getattr(exc, "detail", exc))})
+    finally:
+        threadhall_claim_worker_lock.release()
+
+
 def sync_threadhall_once(*, acknowledgements_in_background: bool = False) -> Dict[str, Any]:
     # Serialize response application, while leaving the integration lock free
     # during HTTP and acknowledgement retries used by minute dispatch.
     with threadhall_sync_request_lock:
-        status, config, identity, acknowledgements = _sync_threadhall_once_before_acks()
+        status, config, identity, acknowledgements, claim_offers = _sync_threadhall_once_before_acks()
     if config is None:
         return status
+
+    if claim_offers and threadhall_claim_worker_lock.acquire(blocking=False):
+        if acknowledgements_in_background:
+            worker = threading.Thread(
+                target=process_threadhall_claim_offers_in_worker,
+                args=(config, identity, claim_offers),
+                daemon=True,
+            )
+            try:
+                worker.start()
+            except Exception:
+                threadhall_claim_worker_lock.release()
+                raise
+        else:
+            try:
+                acknowledgements.extend(process_threadhall_claim_offers(config, identity, claim_offers))
+            finally:
+                threadhall_claim_worker_lock.release()
 
     if acknowledgements_in_background:
         # Keep the poll thread available for the next command batch even when
@@ -1874,6 +2655,10 @@ def _deliver_threadhall_ack_batch(
     errors: List[str] = []
     acknowledged: List[Tuple[str, Dict[str, Any]]] = []
     for command_id, outcome in acknowledgements:
+        if outcome.get("pending_ack") is not True or outcome.get("claim_state") in {
+            "requested", "execution_unknown", "claimed_after_authority_change", "claimed_after_stop", "superseded_before_claim", "held_after_local_stop", "held_after_unverified_stop", "not_claimed",
+        }:
+            continue
         with threadhall_integration_lock:
             if threadhall_connection_identity(load_threadhall_config()) != identity:
                 return safe_threadhall_status()
@@ -1916,43 +2701,70 @@ def _sync_threadhall_once_before_acks() -> Tuple[
     Optional[Dict[str, Any]],
     Tuple[str, ...],
     List[Tuple[str, Dict[str, Any]]],
+    List[Dict[str, Any]],
 ]:
-    global threadhall_ack_retry_cursor
+    global threadhall_ack_retry_cursor, threadhall_unverified_stop_runtime
     with threadhall_integration_lock:
         config = load_threadhall_config()
-        if not config.get("enabled") or not config.get("token") or not config.get("base_url"):
-            return safe_threadhall_status(), None, (), []
+        if (
+            not config.get("enabled")
+            or config.get("pairing_pending")
+            or not config.get("token")
+            or not config.get("base_url")
+        ):
+            return safe_threadhall_status(), None, (), [], []
         authority = stored_threadhall_authority(config.get("authority"))
         if not authority:
-            clear_threadhall_clock_proof()
-            stop_loops()
-            purge_threadhall_managed_schedules()
-            save_threadhall_config({
-                "enabled": False,
-                "token": "",
-                "authority": {},
-                "schedule_revision": "",
-                "managed_schedule_hash": "",
-                "calendar": [],
-                "calendar_defaults": {},
-                "last_sync_at": None,
-                "last_error": "Synchronization stopped because complete pairing authority is unavailable.",
-            })
-            save_threadhall_command_history({})
+            clear_threadhall_authority_state(
+                config,
+                "Synchronization stopped because complete pairing authority is unavailable.",
+            )
             raise HTTPException(
                 status_code=409,
                 detail="Re-pair with Threadhall before synchronizing",
             )
-        # An offered physical command may already have executed. Never accept
-        # another offer until its local outcome ledger is known to be readable.
-        load_threadhall_command_history()
         identity = threadhall_connection_identity(config)
+        # A damaged local ledger must not prevent receipt of urgent STOP.
+        # Physical non-STOP action remains blocked when the ledger is loaded
+        # after the authenticated response's STOP has been handled.
+        request_stop_epoch = config.get("stop_epoch")
+        request_stop_runtime_generation = threadhall_stop_runtime_generation
     # Controller probes and sync HTTP may wait on devices or the network.
     # Let minute dispatch and pair/unpair proceed while those calls run.
-    payload = threadhall_sync_payload(config)
+    try:
+        load_threadhall_command_history(config)
+        history_degraded = False
+    except (HTTPException, OSError):
+        # Poll for STOP with the paired token even when receipts cannot prove
+        # a non-STOP command safe. No claim, ACK, or schedule write follows.
+        history_degraded = True
+    if (
+        threadhall_authority_fence_failed
+        or threadhall_config_integrity_failed
+        or threadhall_remote_commands_held(config)
+        or history_degraded
+    ):
+        payload = threadhall_stop_only_sync_payload(config)
+        payload_degraded = True
+    else:
+        try:
+            payload = threadhall_sync_payload(config)
+            payload_degraded = False
+        except Exception:
+            payload = threadhall_stop_only_sync_payload(config)
+            payload_degraded = True
     with threadhall_integration_lock:
-        if threadhall_connection_identity(load_threadhall_config()) != identity:
-            return safe_threadhall_status(), None, (), []
+        current_config = load_threadhall_config()
+        if threadhall_connection_identity(current_config) != identity:
+            return safe_threadhall_status(), None, (), [], []
+        if (
+            threadhall_authority_fence_failed
+            or threadhall_config_integrity_failed
+            or threadhall_remote_commands_held(current_config)
+            or history_degraded
+        ):
+            payload = threadhall_stop_only_sync_payload(current_config)
+            payload_degraded = True
     request_started_utc = datetime.now(timezone.utc)
     request_started_monotonic = time.monotonic()
     response = threadhall_request(
@@ -1967,27 +2779,116 @@ def _sync_threadhall_once_before_acks() -> Tuple[
         current_config = load_threadhall_config()
         if threadhall_connection_identity(current_config) != identity:
             # An earlier authority's response cannot apply after pair/unpair.
-            return safe_threadhall_status(), None, (), []
+            return safe_threadhall_status(), None, (), [], []
+        stopped_during_request = (
+            current_config.get("stop_epoch") != request_stop_epoch
+            or threadhall_stop_runtime_generation != request_stop_runtime_generation
+            or threadhall_authority_fence_failed
+        )
         config = current_config
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid sync data")
         data = response.get("data") if isinstance(response.get("data"), dict) else response
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid sync data")
         response_device = data.get("device") if isinstance(data.get("device"), dict) else {}
         if response_device.get("id") != authority["device_id"]:
-            clear_threadhall_clock_proof()
-            stop_loops()
-            purge_threadhall_managed_schedules()
-            save_threadhall_config({
-                "enabled": False,
-                "token": "",
-                "authority": {},
-                "schedule_revision": "",
-                "managed_schedule_hash": "",
-                "calendar": [],
-                "calendar_defaults": {},
-                "last_sync_at": None,
-                "last_error": "Synchronization stopped because pairing authority changed.",
-            })
-            save_threadhall_command_history({})
+            clear_threadhall_authority_state(
+                config,
+                "Synchronization stopped because pairing authority changed.",
+            )
             raise HTTPException(status_code=409, detail="Threadhall pairing authority changed")
+        paired_protocol = int(config.get("protocol_version") or 1)
+        publication = data.get("schedule_publication")
+        server_stop_only = (
+            isinstance(publication, dict)
+            and publication.get("status") == "HELD"
+            and publication.get("code") in {
+                "PIBELLS_STOP_ONLY_POLL",
+                "PIBELLS_CURRENT_SCHOOL_YEAR_INVALID",
+            }
+        )
+        if paired_protocol == PIBELLS_PROTOCOL_VERSION:
+            if (
+                config.get("claim_url_template") != THREADHALL_CLAIM_URL_TEMPLATE
+                or data.get("protocol_version") != PIBELLS_PROTOCOL_VERSION
+                or (
+                    data.get("execution_claim_v1") is not True
+                    and not server_stop_only
+                )
+            ):
+                raise HTTPException(status_code=502, detail="Threadhall did not confirm fresh execution-claim authority")
+        elif paired_protocol != 1 or data.get("protocol_version", 1) != 1:
+            raise HTTPException(status_code=502, detail="Threadhall sync protocol changed; re-pair before commands")
+        raw_commands = data.get("commands", [])
+        if not isinstance(raw_commands, list):
+            raise HTTPException(status_code=502, detail="Threadhall returned invalid command offers")
+        stop_received = any(
+            isinstance(command, dict) and command.get("type") == "STOP_AUDIO"
+            for command in raw_commands
+        )
+        stop_error: Optional[Exception] = None
+        if stop_received:
+            try:
+                config = advance_threadhall_stop_fence()
+            except Exception:
+                # The runtime generation still fences in-flight grants. Stop
+                # audio before reporting the failed durable fence.
+                stop_loops()
+                raise HTTPException(
+                    status_code=503,
+                    detail="Audio stopped, but STOP ordering state could not be saved",
+                )
+            # Stop before schedule validation, managed writes, or ledger reads.
+            # A later failed receipt must not leave audio running.
+            try:
+                stop_loops()
+            except Exception as exc:
+                # Keep polling and leave every STOP receipt retryable. A
+                # resistant player must never produce a terminal ACK.
+                stop_error = exc
+                threadhall_unverified_stop_runtime = True
+                try:
+                    config = save_threadhall_config({"unverified_stop_hold": True})
+                except Exception:
+                    # The runtime fence still blocks claims in this process;
+                    # the retry receipt below may provide durable evidence.
+                    pass
+        if (
+            threadhall_authority_fence_failed
+            or threadhall_config_integrity_failed
+            or threadhall_remote_commands_held(config)
+            or history_degraded
+            or payload_degraded
+            or server_stop_only
+        ):
+            # The minimal request exists only to fetch STOP. No schedule
+            # publication, ACK, claim, or enabled-state write is trusted.
+            clear_threadhall_clock_proof()
+            if history_degraded:
+                raise threadhall_history_unavailable()
+            reason = (
+                "Threadhall pairing file requires operator reconciliation."
+                if threadhall_config_integrity_failed else
+                "Remote commands are held after local STOP; re-pair to reconcile."
+                if threadhall_remote_commands_held(config) else
+                "Threadhall authority change requires operator reconciliation."
+                if threadhall_authority_fence_failed else
+                "Threadhall held schedule publication; only remote STOP was processed."
+                if server_stop_only else
+                "Controller telemetry was unavailable; only remote STOP was processed."
+            )
+            try:
+                status = safe_threadhall_status(read_only=True)
+            except Exception:
+                status = {"enabled": False, "poll_seconds": config.get("poll_seconds")}
+            status["enabled"] = False
+            status["execution_claim_v1"] = False
+            status["last_error"] = reason
+            if stop_error is not None:
+                status["last_error"] = "Audio termination is unverified; retry remote STOP. " + reason
+            return status, None, (), [], []
+        history = load_threadhall_command_history()
         clear_threadhall_clock_proof()
         raw_schedules = data.get("schedules")
         schedules_supplied = isinstance(raw_schedules, list)
@@ -2043,20 +2944,98 @@ def _sync_threadhall_once_before_acks() -> Tuple[
                 schedule_updates["calendar_defaults"] = calendar_defaults
             schedule_updates["managed_schedule_hash"] = managed_schedule_state_hash()
             config = save_threadhall_config(schedule_updates)
-        history = load_threadhall_command_history()
         new_command_ids: List[str] = []
         reoffered_command_ids: List[str] = []
-        for command in data.get("commands", []):
+        claim_offers: List[Dict[str, Any]] = []
+        # STOP in this response takes priority over claim requests.
+        ordered_commands = sorted(
+            raw_commands,
+            key=lambda command: 0 if isinstance(command, dict) and command.get("type") == "STOP_AUDIO" else 1,
+        )
+        for command in ordered_commands:
             if not isinstance(command, dict) or "id" not in command:
                 continue
             command_id = str(command["id"])
+            if not command_id:
+                continue
+            command_type = command.get("type")
             previous = history.get(command_id)
-            if previous:
-                reoffered_command_ids.append(command_id)
+            if previous and not (
+                command_type == "STOP_AUDIO" and previous.get("stop_retry_pending") is True
+            ):
+                if previous.get("pending_ack") is True:
+                    reoffered_command_ids.append(command_id)
+                continue
+            if command_type != "STOP_AUDIO" and threadhall_unverified_stop_held(config, history):
+                history[command_id] = {
+                    "status": "failed",
+                    "summary": "Audio termination is unverified; command was not claimed",
+                    "detail": {"stop_termination_unverified": True},
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                    "pending_ack": False,
+                    "claim_state": "held_after_unverified_stop",
+                }
+                save_threadhall_command_history(history)
+                continue
+            if paired_protocol == PIBELLS_PROTOCOL_VERSION and command_type != "STOP_AUDIO":
+                valid_offer = (
+                    isinstance(command.get("id"), str)
+                    and isinstance(command_type, str)
+                    and bool(command_type)
+                    and command.get("claim_required") is True
+                    and "payload" not in command
+                    and "expires_at" in command
+                    and isinstance(command.get("idempotency_key"), str)
+                    and bool(command["idempotency_key"])
+                    and (command.get("expires_at") is None or isinstance(command.get("expires_at"), str))
+                )
+                if valid_offer and not command_expired_before_execution(command):
+                    # A response already in flight when STOP arrived, or a
+                    # batch containing STOP, cannot authorize older playback.
+                    if stopped_during_request or stop_received:
+                        history[command_id] = {
+                            "status": "failed",
+                            "summary": "STOP superseded the offer before its execution claim",
+                            "detail": {"stopped_before_claim": True},
+                            "occurred_at": datetime.now(timezone.utc).isoformat(),
+                            "pending_ack": False,
+                            "claim_state": "superseded_before_claim",
+                        }
+                        save_threadhall_command_history(history)
+                    else:
+                        claim_offers.append({
+                            **command,
+                            "id": command_id,
+                            "_stop_epoch_at_offer": threadhall_stop_epoch(config),
+                            "_stop_runtime_generation_at_offer": threadhall_stop_runtime_generation,
+                        })
+                    continue
+                history[command_id] = {
+                    "status": "failed",
+                    "summary": "Execution offer was invalid or expired before claim",
+                    "detail": {"claim_not_attempted": True},
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                    "pending_ack": False,
+                    "claim_state": "not_claimed",
+                }
+                save_threadhall_command_history(history)
+                continue
+            if command_type != "STOP_AUDIO":
+                # Existing v1 pairings can still receive STOP. Never execute a
+                # non-STOP offer that lacks a one-time server claim.
+                history[command_id] = {
+                    "status": "failed",
+                    "summary": "Re-pair with the execution-claim protocol before physical commands",
+                    "detail": {"execution_claim_required": True},
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                    "pending_ack": True,
+                }
+                save_threadhall_command_history(history)
+                new_command_ids.append(command_id)
                 continue
             occurred_at = datetime.now(timezone.utc).isoformat()
             detail: Dict[str, Any] = {}
-            if command_expired_before_execution(command):
+            if command_expired_before_execution(command) and stop_error is None:
                 outcome = {
                     "status": "failed",
                     "summary": "Command expired before controller execution",
@@ -2073,30 +3052,44 @@ def _sync_threadhall_once_before_acks() -> Tuple[
                     "summary": "Controller execution was interrupted; physical outcome is unknown",
                     "detail": {"execution_outcome_unknown": True},
                     "occurred_at": occurred_at,
-                    "pending_ack": True,
+                    "pending_ack": False,
+                    "stop_retry_pending": True,
                 }
                 history[command_id] = outcome
                 save_threadhall_command_history(history)
-                try:
-                    summary = run_threadhall_command(command)
+                if stop_error is None:
                     outcome = {
                         "status": "acknowledged",
-                        "summary": summary,
+                        "summary": "Stopped active audio",
                         "detail": detail,
                         "occurred_at": datetime.now(timezone.utc).isoformat(),
                         "pending_ack": True,
                     }
-                except Exception as exc:
+                else:
                     outcome = {
                         "status": "failed",
-                        "summary": str(getattr(exc, "detail", exc)),
-                        "detail": detail,
+                        "summary": str(getattr(stop_error, "detail", stop_error)),
+                        "detail": {"termination_unverified": True},
                         "occurred_at": datetime.now(timezone.utc).isoformat(),
-                        "pending_ack": True,
+                        "pending_ack": False,
+                        "stop_retry_pending": True,
                     }
             history[command_id] = outcome
             save_threadhall_command_history(history)
             new_command_ids.append(command_id)
+        if stop_received and stop_error is None and threadhall_unverified_stop_held(config, history):
+            # A verified physical STOP resolves older unverified termination,
+            # even when those server command IDs have expired. Keep their
+            # receipts, but do not send a stale terminal ACK for them.
+            verified_at = datetime.now(timezone.utc).isoformat()
+            for entry in history.values():
+                if isinstance(entry, dict) and entry.get("stop_retry_pending") is True:
+                    entry["stop_retry_pending"] = False
+                    entry["stop_verified_at"] = verified_at
+                    entry["pending_ack"] = False
+            save_threadhall_command_history(history)
+            config = save_threadhall_config({"unverified_stop_hold": False})
+            threadhall_unverified_stop_runtime = False
         older_pending_ids = [
             command_id
             for command_id, outcome in history.items()
@@ -2134,11 +3127,21 @@ def _sync_threadhall_once_before_acks() -> Tuple[
         )
         sync_updates: Dict[str, Any] = {
             "enabled": True,
-            "protocol_version": int(data.get("protocol_version") or PIBELLS_PROTOCOL_VERSION),
+            "protocol_version": paired_protocol,
             "poll_seconds": int(data.get("poll_seconds") or config.get("poll_seconds") or THREADHALL_DEFAULT_POLL_SECONDS),
             "schedule_revision": schedule_revision or config.get("schedule_revision", ""),
             "last_sync_at": datetime.now().isoformat(timespec="seconds"),
-            "last_error": "",
+            "last_error": (
+                "Execution claim, physical outcome, or STOP termination is unresolved; operator reconciliation is required."
+                if any(
+                    entry.get("claim_state") in {"requested", "execution_unknown", "claimed_after_authority_change", "claimed_after_stop", "superseded_before_claim", "held_after_local_stop", "held_after_unverified_stop", "not_claimed"}
+                    or entry.get("stop_retry_pending") is True
+                    for entry in history.values()
+                    if isinstance(entry, dict)
+                ) else
+                "Re-pair this controller for execution claims; non-STOP commands are disabled."
+                if paired_protocol == 1 else ""
+            ),
         }
         if calendar_supplied:
             sync_updates["calendar"] = calendar
@@ -2154,30 +3157,37 @@ def _sync_threadhall_once_before_acks() -> Tuple[
             ),
             "poll_seconds": saved.get("poll_seconds"),
         }
-        return status, config, identity, acknowledgements
+        return status, config, identity, acknowledgements, claim_offers
 
 
 def threadhall_sync_loop() -> None:
     while True:
         delay = THREADHALL_DEFAULT_POLL_SECONDS
-        with threadhall_integration_lock:
-            attempted_identity = threadhall_connection_identity(load_threadhall_config())
+        attempted_identity = None
         try:
+            with threadhall_integration_lock:
+                attempted_identity = threadhall_connection_identity(load_threadhall_config())
             status = sync_threadhall_once(acknowledgements_in_background=True)
             delay = int(status.get("poll_seconds") or delay)
         except Exception as exc:
-            with threadhall_integration_lock:
-                config = load_threadhall_config()
-                if (
-                    config.get("enabled")
-                    and config.get("token")
-                    and threadhall_connection_identity(config) == attempted_identity
-                ):
-                    save_threadhall_config({
-                        "last_error": str(getattr(exc, "detail", exc)),
-                        "last_sync_at": config.get("last_sync_at"),
-                    })
-                delay = int(config.get("poll_seconds") or delay)
+            # A second disk error while recording the first failure must not
+            # kill this daemon; the next poll may still receive remote STOP.
+            try:
+                with threadhall_integration_lock:
+                    config = load_threadhall_config()
+                    delay = int(config.get("poll_seconds") or delay)
+                    if (
+                        attempted_identity is not None
+                        and config.get("enabled")
+                        and config.get("token")
+                        and threadhall_connection_identity(config) == attempted_identity
+                    ):
+                        save_threadhall_config({
+                            "last_error": str(getattr(exc, "detail", exc)),
+                            "last_sync_at": config.get("last_sync_at"),
+                        })
+            except Exception:
+                pass
         time.sleep(max(10, min(300, delay)))
 
 
@@ -2332,31 +3342,87 @@ def current_session_user(request: Request) -> Optional[str]:
     return sessions.get(token)
 
 
-def terminate_processes(processes: List[subprocess.Popen]) -> None:
-    for proc in processes:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-    for proc in processes:
-        try:
-            proc.wait(timeout=1)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                continue
-            try:
-                proc.wait(timeout=1)
-            except Exception:
-                pass
+def audio_group_alive(group_id: int) -> bool:
+    try:
+        os.killpg(group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Permission or other probe errors cannot prove that audio stopped.
+        return True
+
+
+def forget_audio_process(proc: subprocess.Popen) -> None:
+    global loop_processes
+    active_audio_processes[:] = [item for item in active_audio_processes if item is not proc]
+    loop_processes = [item for item in loop_processes if item is not proc]
+    audio_process_groups.pop(id(proc), None)
+
+
+def signal_audio_process(proc: subprocess.Popen, *, kill: bool) -> None:
+    group_id = audio_process_groups.get(id(proc))
+    try:
+        if group_id is not None:
+            # Once the group leader is gone, its numeric PGID may eventually
+            # be reused. Do not signal a group we can no longer bind to this
+            # live child; an orphan group stays unresolved for operator action.
+            if proc.poll() is None and os.getpgid(proc.pid) == group_id and audio_group_alive(group_id):
+                os.killpg(group_id, signal.SIGKILL if kill else signal.SIGTERM)
+        elif proc.poll() is None:
+            proc.kill() if kill else proc.terminate()
+    except Exception:
+        # Verification below keeps failed signals in the registry for STOP retry.
+        pass
+
+
+def wait_for_audio_stop(proc: subprocess.Popen, deadline: float) -> bool:
+    group_id = audio_process_groups.get(id(proc))
+    waited = False
+    try:
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        waited = True
+    except Exception:
+        pass
+    if group_id is not None:
+        while audio_group_alive(group_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return not audio_group_alive(group_id)
+    if waited:
+        return True
+    try:
+        return proc.poll() is not None
+    except Exception:
+        return False
+
+
+def terminate_processes(processes: List[subprocess.Popen]) -> List[subprocess.Popen]:
+    with audio_process_lock:
+        targets = list({id(proc): proc for proc in processes}.values())
+        for proc in targets:
+            signal_audio_process(proc, kill=False)
+        deadline = time.monotonic() + 1.0
+        unresolved = [proc for proc in targets if not wait_for_audio_stop(proc, deadline)]
+        for proc in unresolved:
+            signal_audio_process(proc, kill=True)
+        deadline = time.monotonic() + 1.0
+        unresolved = [proc for proc in unresolved if not wait_for_audio_stop(proc, deadline)]
+        unresolved_ids = {id(proc) for proc in unresolved}
+        for proc in targets:
+            if id(proc) not in unresolved_ids:
+                forget_audio_process(proc)
+        return unresolved
 
 
 def stop_loops() -> None:
-    global loop_processes
-    processes = loop_processes
-    loop_processes = []
-    terminate_processes(processes)
+    # Historical name retained for local API compatibility; STOP covers every
+    # active playback, including ordinary local and Barix one-shot processes.
+    with audio_process_lock:
+        unresolved = terminate_processes(list(active_audio_processes))
+        if unresolved:
+            raise RuntimeError(
+                f"Unable to verify audio stopped on {len(unresolved)} output(s); retry STOP_AUDIO"
+            )
 
 
 def get_local_ip() -> str:
@@ -2721,6 +3787,19 @@ def trigger_bell(
     loop: bool = False,
     output_keys: Optional[List[str]] = None,
 ) -> None:
+    load_threadhall_config()
+    if threadhall_config_integrity_failed:
+        raise threadhall_config_unavailable()
+    # A STOP cannot race between launching a stream and registering its handle.
+    with audio_process_lock:
+        _trigger_bell_locked(sound_file, loop=loop, output_keys=output_keys)
+
+
+def _trigger_bell_locked(
+    sound_file: str,
+    loop: bool = False,
+    output_keys: Optional[List[str]] = None,
+) -> None:
     global loop_processes
     sound_file = ensure_audio_exists(sound_file)
     devices = load_devices()
@@ -2734,11 +3813,16 @@ def trigger_bell(
         capture_stderr: bool = False,
     ) -> Optional[subprocess.Popen]:
         try:
-            return subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
+                start_new_session=True,
             )
+            active_audio_processes.append(proc)
+            if isinstance(getattr(proc, "pid", None), int) and proc.pid > 0:
+                audio_process_groups[id(proc)] = proc.pid
+            return proc
         except FileNotFoundError as exc:
             print(f"Failed to start {label}: {exc}")
         except Exception as exc:
@@ -2825,15 +3909,36 @@ def trigger_bell(
         if failures:
             raise RuntimeError("Audio stream failed to start: " + "; ".join(failures))
 
-    def reap_processes(procs: List[subprocess.Popen]) -> None:
-        for proc in procs:
-            try:
-                return_code = proc.wait()
-                if return_code not in (None, 0):
-                    detail = process_error(proc)
-                    print(detail or f"Audio process exited with status {return_code}")
-            except Exception:
-                pass
+    def reap_process(proc: subprocess.Popen) -> None:
+        waited = False
+        try:
+            return_code = proc.wait()
+            waited = True
+            if return_code not in (None, 0):
+                detail = process_error(proc)
+                print(detail or f"Audio process exited with status {return_code}")
+        except Exception:
+            pass
+        finally:
+            # A shell leader can exit before its ffmpeg/aplay children.
+            # Keep watching that group, then promptly discard its numeric
+            # PGID so a later unrelated group cannot inherit this handle.
+            while True:
+                with audio_process_lock:
+                    if not any(item is proc for item in active_audio_processes):
+                        break
+                    group_id = audio_process_groups.get(id(proc))
+                    if group_id is None:
+                        try:
+                            stopped = waited or proc.poll() is not None
+                        except Exception:
+                            stopped = waited
+                    else:
+                        stopped = not audio_group_alive(group_id)
+                    if stopped:
+                        forget_audio_process(proc)
+                        break
+                time.sleep(0.05)
 
     if loop:
         stop_loops()
@@ -2848,9 +3953,12 @@ def trigger_bell(
             if local_proc:
                 started_procs.append(local_proc)
             loop_processes = started_procs
+            for proc in started_procs:
+                threading.Thread(target=reap_process, args=(proc,), daemon=True).start()
         except Exception:
-            loop_processes = []
-            terminate_processes(started_procs)
+            unresolved = terminate_processes(started_procs)
+            if unresolved:
+                raise RuntimeError("Unable to verify playback startup cleanup; retry STOP_AUDIO")
             raise
         return
 
@@ -2863,14 +3971,26 @@ def trigger_bell(
         if local_proc:
             procs.append(local_proc)
     except Exception:
-        terminate_processes(procs)
+        unresolved = terminate_processes(procs)
+        if unresolved:
+            raise RuntimeError("Unable to verify playback startup cleanup; retry STOP_AUDIO")
         raise
     if procs:
-        threading.Thread(target=reap_processes, args=(procs,), daemon=True).start()
+        for proc in procs:
+            threading.Thread(target=reap_process, args=(proc,), daemon=True).start()
 
 
 def dispatch_due_events(now: Optional[datetime] = None) -> None:
-    config = load_threadhall_config()
+    with threadhall_integration_lock:
+        config = load_threadhall_config()
+        dispatch_stop_generation = threadhall_stop_runtime_generation
+        dispatch_identity = threadhall_connection_identity(config)
+    if threadhall_config_integrity_failed or threadhall_unverified_stop_held(config):
+        return
+    if (
+        threadhall_authority_fence_failed or threadhall_remote_commands_held(config)
+    ) and threadhall_managed_schedule_read_only(config):
+        return
     active = load_all_schedules().get("active")
     if threadhall_manages_current_schedule(config, active):
         if not managed_schedule_clock_status(config)["ready"]:
@@ -2900,7 +4020,20 @@ def dispatch_due_events(now: Optional[datetime] = None) -> None:
         ):
             continue
         try:
-            trigger_bell(event.sound_file, output_keys=event.output_keys)
+            # Planning may take time. Hold integration through playback start
+            # so a concurrent STOP either wins first or stops this new player.
+            with threadhall_integration_lock:
+                current = load_threadhall_config()
+                if (
+                    threadhall_stop_runtime_generation != dispatch_stop_generation
+                    or threadhall_connection_identity(current) != dispatch_identity
+                    or threadhall_config_integrity_failed
+                    or threadhall_unverified_stop_held(current)
+                    or (threadhall_authority_fence_failed and threadhall_managed_schedule_read_only(current))
+                    or (threadhall_remote_commands_held(current) and threadhall_managed_schedule_read_only(current))
+                ):
+                    return
+                trigger_bell(event.sound_file, output_keys=event.output_keys)
         except Exception as exc:
             print(f"Bell event {event.id} failed: {getattr(exc, 'detail', exc)}")
 
@@ -3016,16 +4149,16 @@ def pair_threadhall_device(body: ThreadhallPairRequest):
 def unpair_threadhall() -> Dict[str, Any]:
     with threadhall_integration_lock:
         config = load_threadhall_config()
-        clear_threadhall_clock_proof()
-        stop_loops()
-        purge_threadhall_managed_schedules()
-        save_threadhall_config({
+        fence_and_disable_threadhall_authority(config, {
             "enabled": False,
+            "pairing_pending": False,
+            "pairing_epoch": str(uuid.uuid4()),
             "base_url": config.get("base_url", ""),
             "device_uuid": config.get("device_uuid") or str(uuid.uuid4()),
             "device_name": config.get("device_name", ""),
             "token": "",
             "authority": {},
+            "claim_url_template": "",
             "schedule_revision": "",
             "managed_schedule_hash": "",
             "calendar": [],
@@ -3034,7 +4167,7 @@ def unpair_threadhall() -> Dict[str, Any]:
             "last_sync_at": None,
             "last_error": "",
         })
-        save_threadhall_command_history({})
+        # Keep receipts from every authority for later re-pair and review.
         return safe_threadhall_status()
 
 
@@ -3344,7 +4477,24 @@ def test_sound(req: TestRequest):
 
 @app.post("/api/stop")
 def stop_sound():
-    stop_loops()
+    global threadhall_stop_runtime_generation
+    with threadhall_integration_lock:
+        try:
+            config = load_threadhall_config()
+            if config.get("pairing_pending") or (
+                config.get("token") and stored_threadhall_authority(config.get("authority"))
+            ):
+                advance_threadhall_stop_fence(hold_remote_commands=True)
+            else:
+                # A never-paired controller has no remote offer to reconcile.
+                # Avoid creating a config without its first receipt ledger.
+                threadhall_stop_runtime_generation += 1
+            fence_saved = True
+        except Exception:
+            fence_saved = False
+        stop_loops()
+        if not fence_saved:
+            raise HTTPException(status_code=503, detail="STOP ordering state could not be saved")
     return {"status": "stopped"}
 
 
@@ -3354,6 +4504,12 @@ def next_event_payload(
     now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
     config = load_threadhall_config()
+    if threadhall_config_integrity_failed or threadhall_unverified_stop_held(config):
+        return None
+    if (
+        threadhall_authority_fence_failed or threadhall_remote_commands_held(config)
+    ) and threadhall_managed_schedule_read_only(config):
+        return None
     active = load_all_schedules().get("active")
     managed = threadhall_manages_current_schedule(config, active)
     if managed:

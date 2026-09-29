@@ -1,8 +1,12 @@
 import importlib
+import io
+import json
+import stat
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,6 +33,7 @@ def save_threadhall_connection(module, overrides):
         "base_url": "https://threadhall.example.test",
         "token": "test-device-token",
         "device_uuid": "local-box",
+        "protocol_version": 1,
         "authority": {
             "district_id": "district-1",
             "school_id": "school-1",
@@ -38,8 +43,48 @@ def save_threadhall_connection(module, overrides):
     config.update(overrides)
     saved = module.save_threadhall_config(config)
     if not module.THREADHALL_COMMAND_HISTORY_FILE.exists():
-        module.save_threadhall_command_history({})
+        module.initialize_threadhall_command_history(saved, fresh_install=True)
     return saved
+
+
+def save_claim_threadhall_connection(module, overrides):
+    return save_threadhall_connection(module, {
+        "protocol_version": 2,
+        "claim_url_template": module.THREADHALL_CLAIM_URL_TEMPLATE,
+        **overrides,
+    })
+
+
+def claim_pair_fields(module):
+    return {
+        "protocol_version": 2,
+        "claim_url_template": module.THREADHALL_CLAIM_URL_TEMPLATE,
+    }
+
+
+def claim_sync_offer(command_id, command_type="PLAY_SOUND", *, expires_at=None):
+    return {
+        "id": command_id,
+        "type": command_type,
+        "claim_required": True,
+        "expires_at": expires_at,
+        "idempotency_key": f"offer-{command_id}",
+    }
+
+
+def claim_grant(command_id, command_type="PLAY_SOUND", payload=None, *, expires_at=None):
+    return {
+        "ok": True,
+        "execute": True,
+        "claim_id": "00000000-0000-4000-8000-000000000001",
+        "claimed_at": datetime.now(timezone.utc).isoformat(),
+        "command": {
+            "id": command_id,
+            "type": command_type,
+            "payload": payload or {},
+            "expires_at": expires_at,
+        },
+    }
 
 
 def verify_managed_schedule_clock(module):
@@ -181,7 +226,8 @@ def test_threadhall_pairing_saves_device_token(module, authed_client, monkeypatc
     def fake_threadhall_request(config, path, *, method="GET", payload=None, token=None):
         assert path == "api/pibells/v1/pair"
         assert payload["pairing_code"] == "ABCD-EFGH"
-        assert payload["protocol_version"] == 1
+        assert payload["protocol_version"] == 2
+        assert payload["capabilities"]["execution_claim_v1"] is True
         assert payload["capabilities"]["calendar_exceptions"] is True
         assert payload["capabilities"]["targeted_outputs"] is True
         assert payload["capabilities"]["effective_schedule_evidence"] is True
@@ -193,7 +239,7 @@ def test_threadhall_pairing_saves_device_token(module, authed_client, monkeypatc
                 "school_id": "school-1",
                 "device_id": "device-1",
             },
-            "protocol_version": 1,
+            **claim_pair_fields(module),
             "poll_seconds": 15,
             "device": {"id": "device-1", "status": "online"},
         }
@@ -271,6 +317,90 @@ def test_pairing_without_authority_fails_closed_and_removes_managed_state(
     }
 
 
+def test_first_failed_pair_preserves_bootstrap_receipt_and_can_retry(module, monkeypatch):
+    seen_devices = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/pair"
+        seen_devices.append(payload["device_uuid"])
+        if len(seen_devices) == 1:
+            raise OSError("pair response was lost")
+        return {
+            "token": "new-device-token",
+            "authority": {
+                "district_id": "district-1",
+                "school_id": "school-1",
+                "device_id": "device-1",
+            },
+            **claim_pair_fields(module),
+            "device": {"id": "device-1"},
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "dashboard", lambda: {"active_schedule": "Default"})
+    monkeypatch.setattr(module, "get_local_ip", lambda: "127.0.0.1")
+    request = module.ThreadhallPairRequest(
+        base_url="https://threadhall.example.test", pairing_code="PAIR-RETRY",
+    )
+    with pytest.raises(module.HTTPException):
+        module.pair_threadhall(request)
+    bootstrap = module.read_threadhall_history_envelope(
+        module.THREADHALL_COMMAND_HISTORY_FILE, allow_bootstrap=True,
+    )
+    assert bootstrap["partitions"] == {}
+    assert module.load_threadhall_config()["history_bootstrap_epoch"] == bootstrap["bootstrap"]["epoch"]
+    with pytest.raises(module.HTTPException):
+        module.read_threadhall_history_envelope(module.THREADHALL_COMMAND_HISTORY_FILE)
+
+    status = module.pair_threadhall(request)
+    assert status["paired"] is True
+    assert seen_devices == [bootstrap["bootstrap"]["device_uuid"]] * 2
+    history = module.read_threadhall_history_envelope(module.THREADHALL_COMMAND_HISTORY_FILE)
+    assert len(history["partitions"]) == 1
+    assert "bootstrap" not in history
+    assert module.load_threadhall_config()["history_bootstrap_epoch"] == ""
+
+
+def test_empty_bootstrap_without_matching_pending_pair_is_rejected(module, monkeypatch):
+    module.save_threadhall_history_bootstrap("00000000-0000-4000-8000-000000000001")
+    module.save_threadhall_config({"enabled": False, "device_uuid": "different-controller"})
+    monkeypatch.setattr(module, "threadhall_request", lambda *a, **kw: pytest.fail("invalid bootstrap must block pairing"))
+    with pytest.raises(module.HTTPException) as error:
+        module.pair_threadhall(module.ThreadhallPairRequest(
+            base_url="https://threadhall.example.test", pairing_code="PAIR-MISMATCH",
+        ))
+    assert error.value.status_code == 503
+
+
+def test_first_pair_can_resume_bootstrap_saved_before_pending_config(module, monkeypatch):
+    device_uuid = "00000000-0000-4000-8000-000000000002"
+    bootstrap = module.save_threadhall_history_bootstrap(device_uuid)
+    assert not module.THREADHALL_CONFIG_FILE.exists()
+    seen = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        seen.append(payload["device_uuid"])
+        return {
+            "token": "new-device-token",
+            "authority": {
+                "district_id": "district-1",
+                "school_id": "school-1",
+                "device_id": "device-1",
+            },
+            **claim_pair_fields(module),
+            "device": {"id": "device-1"},
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "dashboard", lambda: {"active_schedule": "Default"})
+    monkeypatch.setattr(module, "get_local_ip", lambda: "127.0.0.1")
+    module.pair_threadhall(module.ThreadhallPairRequest(
+        base_url="https://threadhall.example.test", pairing_code="PAIR-BOOTSTRAP",
+    ))
+    assert seen == [device_uuid]
+    assert module.load_threadhall_config()["history_bootstrap_epoch"] == ""
+
+
 def test_ambiguous_repair_failure_clears_existing_managed_authority(
     module,
     monkeypatch,
@@ -319,10 +449,221 @@ def test_ambiguous_repair_failure_clears_existing_managed_authority(
     assert config["calendar"] == []
     assert config["last_sync_at"] is None
     assert module.load_threadhall_command_history() == {}
+    retained = json.loads(module.THREADHALL_COMMAND_HISTORY_FILE.read_text())
+    assert any(
+        partition["entries"].get("command-1", {}).get("pending_ack") is True
+        for partition in retained["partitions"].values()
+    )
     assert module.load_all_schedules() == {
         "active": "Local Safety",
         "schedules": {"Local Safety": []},
     }
+
+
+def test_empty_unbound_history_allows_only_authenticated_stop_poll_and_blocks_repair(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    module.THREADHALL_COMMAND_HISTORY_FILE.write_text("{}")
+    requests = []
+    stopped = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append(path)
+        assert path == "api/pibells/v1/sync"
+        assert payload["telemetry"]["stop_only_poll"] is True
+        return {
+            "protocol_version": 1,
+            "device": {"id": "device-1"},
+            "commands": [
+                {"id": "urgent-stop", "type": "STOP_AUDIO", "payload": {}},
+                {"id": "untrusted-play", "type": "PLAY_SOUND", "payload": {"sound_key": "passing"}},
+            ],
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: pytest.fail("No untrusted command may run"))
+
+    with pytest.raises(module.HTTPException) as sync_error:
+        module.sync_threadhall_once()
+    with pytest.raises(module.HTTPException) as pair_error:
+        module.pair_threadhall(module.ThreadhallPairRequest(
+            base_url="https://threadhall.example.test",
+            pairing_code="PAIR-WITHOUT-HISTORY",
+        ))
+
+    assert sync_error.value.status_code == 503
+    assert pair_error.value.status_code == 503
+    assert requests == ["api/pibells/v1/sync"]
+    assert stopped == [True]
+    assert module.THREADHALL_COMMAND_HISTORY_FILE.read_text() == "{}"
+
+
+def test_nonempty_flat_history_requires_reconciliation_without_rewriting(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    old_receipts = {
+        "already-played": {
+            "status": "acknowledged",
+            "summary": "Prior physical action",
+            "occurred_at": "2026-09-05T12:00:00+00:00",
+            "pending_ack": True,
+        }
+    }
+    original = json.dumps(old_receipts).encode()
+    module.THREADHALL_COMMAND_HISTORY_FILE.write_bytes(original)
+    monkeypatch.setattr(
+        module,
+        "threadhall_request",
+        lambda *args, **kwargs: pytest.fail("Incomplete older ledger must block network"),
+    )
+
+    with pytest.raises(module.HTTPException) as read_error:
+        module.load_threadhall_command_history()
+    with pytest.raises(module.HTTPException) as pair_error:
+        module.pair_threadhall(module.ThreadhallPairRequest(
+            base_url="https://threadhall.example.test",
+            pairing_code="PAIR-INCOMPLETE-HISTORY",
+        ))
+    assert read_error.value.status_code == 503
+    assert pair_error.value.status_code == 503
+    assert module.THREADHALL_COMMAND_HISTORY_FILE.read_bytes() == original
+
+
+def test_url_alias_for_same_authority_cannot_create_empty_history(module, monkeypatch):
+    saved = save_threadhall_connection(module, {})
+    module.save_threadhall_command_history({
+        "already-played": {
+            "status": "acknowledged",
+            "summary": "Prior physical action",
+            "occurred_at": "2026-09-05T12:00:00+00:00",
+            "pending_ack": False,
+        }
+    })
+    original = module.THREADHALL_COMMAND_HISTORY_FILE.read_bytes()
+    monkeypatch.setattr(
+        module,
+        "threadhall_request",
+        lambda *args, **kwargs: {
+            "token": "alias-token",
+            **claim_pair_fields(module),
+            "authority": saved["authority"],
+            "device": {"id": saved["authority"]["device_id"]},
+        },
+    )
+
+    with pytest.raises(module.HTTPException) as pair_error:
+        module.pair_threadhall(module.ThreadhallPairRequest(
+            base_url="https://THREADHALL.example.test:443",
+            pairing_code="PAIR-URL-ALIAS",
+        ))
+    assert pair_error.value.status_code == 503
+    assert module.THREADHALL_COMMAND_HISTORY_FILE.read_bytes() == original
+    assert module.load_threadhall_config()["token"] == ""
+
+
+def test_receipts_remain_bound_to_authority_across_unpair_and_repair(module, monkeypatch):
+    first = save_threadhall_connection(module, {})
+    module.save_threadhall_command_history({
+        "physical-command": {
+            "status": "acknowledged",
+            "summary": "Already executed",
+            "occurred_at": "2026-09-05T12:00:00+00:00",
+            "pending_ack": True,
+        }
+    })
+    module.unpair_threadhall()
+    assert module.load_threadhall_command_history() == {}
+
+    def pair_response(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/pair"
+        return {
+            "token": "replacement-token",
+            **claim_pair_fields(module),
+            "authority": first["authority"],
+            "device": {"id": first["authority"]["device_id"]},
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", pair_response)
+    module.pair_threadhall(module.ThreadhallPairRequest(
+        base_url="https://threadhall.example.test",
+        pairing_code="PAIR-SAME-AUTHORITY",
+    ))
+    assert module.load_threadhall_command_history()["physical-command"]["pending_ack"] is True
+
+    module.unpair_threadhall()
+    second_authority = {**first["authority"], "school_id": "another-school"}
+    monkeypatch.setattr(
+        module,
+        "threadhall_request",
+        lambda *args, **kwargs: {
+            "token": "different-authority-token",
+            **claim_pair_fields(module),
+            "authority": second_authority,
+            "device": {"id": second_authority["device_id"]},
+        },
+    )
+    module.pair_threadhall(module.ThreadhallPairRequest(
+        base_url="https://threadhall.example.test",
+        pairing_code="PAIR-OTHER-AUTHORITY",
+    ))
+    assert module.load_threadhall_command_history() == {}
+    retained = json.loads(module.THREADHALL_COMMAND_HISTORY_FILE.read_text())
+    assert len(retained["partitions"]) == 2
+    assert any("physical-command" in partition["entries"] for partition in retained["partitions"].values())
+
+
+def test_pair_network_wait_allows_schedule_read_and_unpair_to_fence_response(
+    module, monkeypatch,
+):
+    save_threadhall_connection(module, {})
+    request_started = threading.Event()
+    release_request = threading.Event()
+    schedule_read_finished = threading.Event()
+    results = []
+
+    def blocked_pair(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/pair"
+        request_started.set()
+        assert release_request.wait(3)
+        return {
+            "token": "late-token",
+            **claim_pair_fields(module),
+            "authority": {
+                "district_id": "district-1",
+                "school_id": "school-1",
+                "device_id": "device-1",
+            },
+            "device": {"id": "device-1"},
+        }
+
+    def run_pair():
+        try:
+            results.append(module.pair_threadhall(module.ThreadhallPairRequest(
+                base_url="https://threadhall.example.test",
+                pairing_code="PAIR-LATE-RESPONSE",
+            )))
+        except BaseException as exc:
+            results.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", blocked_pair)
+    pair_worker = threading.Thread(target=run_pair, daemon=True)
+    pair_worker.start()
+    try:
+        assert request_started.wait(1)
+        read_worker = threading.Thread(
+            target=lambda: (module.resolve_effective_schedule(), schedule_read_finished.set()),
+            daemon=True,
+        )
+        read_worker.start()
+        assert schedule_read_finished.wait(1), "Pair network wait blocked local schedule read"
+        module.unpair_threadhall()
+    finally:
+        release_request.set()
+        pair_worker.join(timeout=2)
+    assert not pair_worker.is_alive()
+    assert len(results) == 1
+    assert isinstance(results[0], module.HTTPException)
+    assert results[0].status_code == 409
+    assert module.load_threadhall_config()["token"] == ""
 
 
 def test_sync_without_complete_stored_authority_fails_closed_before_network(
@@ -396,6 +737,11 @@ def test_sync_response_for_another_device_clears_managed_authority_state(
     assert config["token"] == ""
     assert config["last_sync_at"] is None
     assert module.load_threadhall_command_history() == {}
+    retained = json.loads(module.THREADHALL_COMMAND_HISTORY_FILE.read_text())
+    assert any(
+        partition["entries"].get("command-1", {}).get("pending_ack") is True
+        for partition in retained["partitions"].values()
+    )
     assert module.load_all_schedules() == {
         "active": "Local Safety",
         "schedules": {"Local Safety": []},
@@ -439,6 +785,7 @@ def test_successful_pairing_clears_history_so_reused_command_id_executes(
         if path == "api/pibells/v1/pair":
             return {
                 "token": "new-device-token",
+                **claim_pair_fields(module),
                 "poll_seconds": 15,
                 "authority": {
                     "district_id": "district-1",
@@ -449,17 +796,16 @@ def test_successful_pairing_clears_history_so_reused_command_id_executes(
             }
         if path == "api/pibells/v1/sync":
             return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
                 "schedules": [],
                 "calendar": [],
                 "device": {"id": "device-1"},
-                "commands": [
-                    {
-                        "id": 7,
-                        "type": "PLAY_SOUND",
-                        "payload": {"sound_key": "passing"},
-                    }
-                ],
+                "commands": [claim_sync_offer("7")],
             }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "7"):
+            assert payload == {"protocol_version": 2, "device_uuid": "local-box"}
+            return claim_grant("7", payload={"sound_key": "passing"})
         if path == "api/pibells/v1/commands/7/ack":
             acknowledgements.append(payload)
             return {"ok": True}
@@ -493,6 +839,7 @@ def test_successful_pairing_clears_history_so_reused_command_id_executes(
 
     assert played == [("bell-passing-classic.mp3", False)]
     assert acknowledgements[0]["status"] == "acknowledged"
+    assert acknowledgements[0]["claim_id"] == "00000000-0000-4000-8000-000000000001"
     assert module.load_threadhall_command_history()["7"]["status"] == "acknowledged"
 
     module.unpair_threadhall()
@@ -541,6 +888,7 @@ def test_same_authority_repair_preserves_managed_state_and_pending_outcomes(
         "threadhall_request",
         lambda *args, **kwargs: {
             "token": "new-token",
+            **claim_pair_fields(module),
             "authority": authority,
             "device": {"id": "device-1"},
         },
@@ -589,6 +937,7 @@ def test_changed_authority_pair_and_unpair_remove_only_managed_state(module, mon
         "threadhall_request",
         lambda *args, **kwargs: {
             "token": "new-token",
+            **claim_pair_fields(module),
             "authority": {
                 "district_id": "district-1",
                 "school_id": "school-2",
@@ -619,7 +968,7 @@ def test_changed_authority_pair_and_unpair_remove_only_managed_state(module, mon
 
 def test_threadhall_sync_applies_revisioned_schedules_and_commands(module, monkeypatch):
     (module.AUDIO_DIR / "bell-passing-classic.mp3").write_bytes(b"fake mp3")
-    save_threadhall_connection(module, {
+    save_claim_threadhall_connection(module, {
         "enabled": True,
         "base_url": "https://threadhall.example.test",
         "token": "pbv1.device-1.test-token-value",
@@ -635,13 +984,15 @@ def test_threadhall_sync_applies_revisioned_schedules_and_commands(module, monke
         if path == "api/pibells/v1/sync":
             assert payload["schedule_options"] == ["Default"]
             assert payload["device_uuid"] == "local-box"
-            assert payload["protocol_version"] == 1
+            assert payload["protocol_version"] == 2
+            assert payload["capabilities"]["execution_claim_v1"] is True
             assert payload["telemetry"]["active_schedule"] == "Default"
             assert payload["telemetry"]["outputs"][0]["key"] == "local"
             assert payload["capabilities"]["targeted_outputs"] is True
             assert payload["local_url"] == "http://10.80.2.42"
             return {
-                "protocol_version": 1,
+                "protocol_version": 2,
+                "execution_claim_v1": True,
                 "poll_seconds": 15,
                 "device": {"id": "device-1"},
                 "schedule_revision": "revision-1",
@@ -663,14 +1014,10 @@ def test_threadhall_sync_applies_revisioned_schedules_and_commands(module, monke
                         ],
                     }
                 ],
-                "commands": [
-                    {
-                        "id": 7,
-                        "type": "TEST_OUTPUT",
-                        "payload": {"sound_key": "passing", "label": "Test Bell"},
-                    }
-                ],
+                "commands": [claim_sync_offer("7", "TEST_OUTPUT")],
             }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "7"):
+            return claim_grant("7", "TEST_OUTPUT", {"sound_key": "passing", "label": "Test Bell"})
         if path == "api/pibells/v1/commands/7/ack":
             acknowledgements.append(payload)
             return {"data": {"status": "acknowledged"}}
@@ -688,6 +1035,7 @@ def test_threadhall_sync_applies_revisioned_schedules_and_commands(module, monke
     assert module.load_schedule()[0].output_keys == ["local"]
     assert played == [("bell-passing-classic.mp3", False)]
     assert acknowledgements[0]["status"] == "acknowledged"
+    assert acknowledgements[0]["claim_id"] == "00000000-0000-4000-8000-000000000001"
     assert module.load_threadhall_config()["schedule_revision"] == "revision-1"
 
 
@@ -967,6 +1315,77 @@ def test_retired_config_migrates_to_threadhall_owner_only_file(module):
     assert "Re-pair with Threadhall" in status["last_error"]
 
 
+def test_pre_upgrade_pairing_without_protocol_stays_v1_and_can_stop(module, monkeypatch):
+    config = {
+        "enabled": True,
+        "base_url": "https://threadhall.example.test",
+        "token": "older-device-token",
+        "device_uuid": "older-controller",
+        "authority": {
+            "district_id": "district-1",
+            "school_id": "school-1",
+            "device_id": "device-1",
+        },
+    }
+    module.THREADHALL_CONFIG_FILE.write_text(json.dumps(config))
+    loaded = module.load_threadhall_config()
+    module.initialize_threadhall_command_history(loaded, fresh_install=True)
+    assert loaded["protocol_version"] == 1
+    normal_payload = module.threadhall_sync_payload(loaded)
+    assert normal_payload["protocol_version"] == 1
+    assert "stop_only_poll" not in normal_payload["telemetry"]
+    assert module.safe_threadhall_status()["execution_claim_v1"] is False
+
+    requests = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append((path, payload))
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 1,
+                "device": {"id": "device-1"},
+                "commands": [{"id": "older-stop", "type": "STOP_AUDIO", "payload": {}}],
+            }
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    module.sync_threadhall_once()
+    assert any(path.endswith("older-stop/ack") for path, _ in requests)
+
+
+def test_threadhall_transport_rejects_redirect_and_plaintext_remote_url(module, monkeypatch):
+    assert module.normalize_threadhall_base_url("http://localhost:3000/") == "http://localhost:3000"
+    assert module.normalize_threadhall_base_url("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
+    with pytest.raises(module.HTTPException, match="HTTPS"):
+        module.normalize_threadhall_base_url("http://district.example.test")
+    with pytest.raises(module.HTTPException):
+        module.normalize_threadhall_base_url("https://user:password@threadhall.example.test")
+
+    requests = []
+
+    class RedirectingOpener:
+        def open(self, request, timeout):
+            requests.append(request)
+            raise module.urllib.error.HTTPError(
+                request.full_url, 302, "Found",
+                {"Location": "https://untrusted.example.test/collect"}, io.BytesIO(b""),
+            )
+
+    def fake_build_opener(*handlers):
+        assert any(isinstance(handler, module.ThreadhallRejectRedirect) for handler in handlers)
+        return RedirectingOpener()
+
+    monkeypatch.setattr(module.urllib.request, "build_opener", fake_build_opener)
+    with pytest.raises(module.HTTPException, match="302"):
+        module.threadhall_request(
+            {"base_url": "https://threadhall.example.test", "token": "device-secret"},
+            "api/pibells/v1/sync", method="POST", payload={"protocol_version": 1},
+        )
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") == "Bearer device-secret"
+    assert module.ThreadhallRejectRedirect().redirect_request(None, None, 302, "Found", {}, "https://untrusted.example.test") is None
+
+
 def test_retired_runtime_aliases_remain_available_but_hidden_from_openapi(
     module,
     authed_client,
@@ -1145,7 +1564,8 @@ def test_threadhall_bundle_rejects_unpublished_calendar_schedule(
     assert detail in str(exc_info.value.detail)
 
 
-def test_pending_threadhall_outcomes_are_never_evicted_from_local_history(module):
+def test_threadhall_history_retains_pending_and_completed_outcomes(module):
+    save_threadhall_connection(module, {})
     pending = {
         f"pending-{index}": {
             "status": "acknowledged",
@@ -1168,8 +1588,8 @@ def test_pending_threadhall_outcomes_are_never_evicted_from_local_history(module
     })
 
     history = module.load_threadhall_command_history()
-    assert len(history) == 501
-    assert set(history) == set(pending)
+    assert len(history) == 502
+    assert set(history) == set(pending) | {"completed"}
 
 
 def test_fixed_mode_ignores_stale_calendar_and_reports_daemon_effective_schedule(module):
@@ -1721,7 +2141,7 @@ def test_sync_explicit_empty_calendar_clears_but_absence_preserves(module, monke
 
 def test_threadhall_command_delivery_is_idempotent_across_ack_retries(module, monkeypatch):
     (module.AUDIO_DIR / "bell-passing-classic.mp3").write_bytes(b"fake mp3")
-    save_threadhall_connection(module, {
+    save_claim_threadhall_connection(module, {
         "enabled": True,
         "base_url": "https://threadhall.example.test",
         "token": "pbv1.device-1.test-token-value",
@@ -1729,25 +2149,26 @@ def test_threadhall_command_delivery_is_idempotent_across_ack_retries(module, mo
     })
     played = []
     acknowledgements = []
+    claims = []
 
     def fake_request(config, path, *, method="GET", payload=None, token=None):
         if path == "api/pibells/v1/sync":
             return {
-                "protocol_version": 1,
+                "protocol_version": 2,
+                "execution_claim_v1": True,
                 "device": {"id": "device-1"},
                 "schedule_revision": "",
                 "schedules": [],
                 "calendar": [],
-                "commands": [
-                    {
-                        "id": "command-1",
-                        "type": "PLAY_SOUND",
-                        "payload": {"sound_key": "passing"},
-                    }
-                ],
+                "commands": [claim_sync_offer("command-1")],
             }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "command-1"):
+            claims.append(payload)
+            return claim_grant("command-1", payload={"sound_key": "passing"})
         if path == "api/pibells/v1/commands/command-1/ack":
             acknowledgements.append(payload)
+            if len(acknowledgements) == 1:
+                raise module.HTTPException(status_code=502, detail="temporary callback failure")
             return {"ok": True}
         raise AssertionError(path)
 
@@ -1758,16 +2179,842 @@ def test_threadhall_command_delivery_is_idempotent_across_ack_retries(module, mo
     module.sync_threadhall_once()
 
     assert played == [("bell-passing-classic.mp3", False)]
+    assert len(claims) == 1
     assert len(acknowledgements) == 2
     assert acknowledgements[1] == acknowledgements[0]
     assert module.load_threadhall_command_history()["command-1"]["status"] == "acknowledged"
+
+
+def test_v2_lost_claim_response_never_executes_or_retries(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    claims = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("lost-response")],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "lost-response"):
+            claims.append(payload)
+            raise module.HTTPException(status_code=502, detail="claim response was lost")
+        pytest.fail("An unknown claim must not be acknowledged")
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: pytest.fail("No grant was received"))
+    module.sync_threadhall_once()
+    module.sync_threadhall_once()
+
+    assert claims == [{"protocol_version": 2, "device_uuid": "local-box"}]
+    receipt = module.load_threadhall_command_history()["lost-response"]
+    assert receipt["claim_state"] == "requested"
+    assert receipt["pending_ack"] is False
+    assert "operator reconciliation" in module.safe_threadhall_status()["last_error"]
+
+
+def test_directory_fsync_failure_prevents_claim_http(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    claims = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("fsync-before-claim")],
+            }
+        claims.append(path)
+        return claim_grant("fsync-before-claim")
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    _, config, identity, _, offers = module._sync_threadhall_once_before_acks()
+    original_fsync = module.os.fsync
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(module.os.fstat(fd).st_mode):
+            raise OSError("directory fsync unavailable")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(module.os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="directory fsync unavailable"):
+        module.process_threadhall_claim_offers(config, identity, offers)
+    assert claims == []
+
+
+def test_directory_fsync_failure_after_grant_never_replays_command(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    claims = []
+    fail_directory = [False]
+    original_fsync = module.os.fsync
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("fsync-after-grant")],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "fsync-after-grant"):
+            claims.append(path)
+            fail_directory[0] = True
+            return claim_grant("fsync-after-grant", payload={"sound_key": "passing"})
+        pytest.fail("An unknown grant outcome must not be acknowledged")
+
+    def maybe_fail_directory_fsync(fd):
+        if fail_directory[0] and stat.S_ISDIR(module.os.fstat(fd).st_mode):
+            raise OSError("directory fsync unavailable")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: pytest.fail("No durable pre-action receipt"))
+    monkeypatch.setattr(module.os, "fsync", maybe_fail_directory_fsync)
+    with pytest.raises(OSError, match="directory fsync unavailable"):
+        module.sync_threadhall_once()
+    monkeypatch.setattr(module.os, "fsync", original_fsync)
+    module.sync_threadhall_once()
+    assert len(claims) == 1
+    assert module.load_threadhall_command_history()["fsync-after-grant"]["pending_ack"] is False
+
+
+def test_v2_mismatched_claim_response_never_executes(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("offered-command")],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "offered-command"):
+            return claim_grant("another-command", payload={"sound_key": "passing"})
+        pytest.fail("A mismatched grant must not be acknowledged")
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: pytest.fail("Mismatched grant"))
+    module.sync_threadhall_once()
+
+    receipt = module.load_threadhall_command_history()["offered-command"]
+    assert receipt["claim_state"] == "requested"
+    assert receipt["pending_ack"] is False
+
+
+def test_v2_unpair_during_claim_discards_late_execution_grant(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    claim_started = threading.Event()
+    release_claim = threading.Event()
+    executed = []
+    errors = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("late-grant")],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "late-grant"):
+            claim_started.set()
+            assert release_claim.wait(3)
+            return claim_grant("late-grant", payload={"sound_key": "passing"})
+        pytest.fail("A stale grant must not be acknowledged")
+
+    def run_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: executed.append(command))
+    worker = threading.Thread(target=run_sync, daemon=True)
+    worker.start()
+    try:
+        assert claim_started.wait(1)
+        module.unpair_threadhall()
+    finally:
+        release_claim.set()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert errors == []
+    assert executed == []
+    retained = json.loads(module.THREADHALL_COMMAND_HISTORY_FILE.read_text())
+    assert any(
+        partition["entries"].get("late-grant", {}).get("claim_state") == "claimed_after_authority_change"
+        for partition in retained["partitions"].values()
+    )
+
+
+@pytest.mark.parametrize("stop_source", ["remote", "local"])
+def test_valid_claim_grant_after_stop_never_starts_playback(module, monkeypatch, stop_source):
+    save_claim_threadhall_connection(module, {})
+    claim_started = threading.Event()
+    release_claim = threading.Event()
+    sync_count = 0
+    acknowledgements = []
+    executed = []
+    errors = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        nonlocal sync_count
+        if path == "api/pibells/v1/sync":
+            sync_count += 1
+            commands = [claim_sync_offer("delayed-play")] if sync_count == 1 else (
+                [{"id": "ordered-stop", "type": "STOP_AUDIO", "payload": {}}]
+                if stop_source == "remote" and sync_count == 2 else []
+            )
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": commands,
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "delayed-play"):
+            claim_started.set()
+            assert release_claim.wait(3)
+            return claim_grant("delayed-play", payload={"sound_key": "passing"})
+        if path == "api/pibells/v1/commands/ordered-stop/ack":
+            acknowledgements.append(payload)
+            return {"ok": True}
+        pytest.fail(f"Unexpected acknowledgement or request: {path}")
+
+    original_run = module.run_threadhall_command
+
+    def run_command(command):
+        if command.get("type") == "STOP_AUDIO":
+            return original_run(command)
+        executed.append(command)
+        return "played"
+
+    def run_first_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", run_command)
+    worker = threading.Thread(target=run_first_sync, daemon=True)
+    worker.start()
+    try:
+        assert claim_started.wait(1)
+        if stop_source == "remote":
+            module.sync_threadhall_once()
+            assert [ack["status"] for ack in acknowledgements] == ["acknowledged"]
+        else:
+            assert module.stop_sound() == {"status": "stopped"}
+        assert module.load_threadhall_config()["stop_epoch"] == 1
+    finally:
+        release_claim.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert executed == []
+    receipt = module.load_threadhall_command_history()["delayed-play"]
+    assert receipt["claim_state"] == "claimed_after_stop"
+    assert receipt["claim_id"] == "00000000-0000-4000-8000-000000000001"
+    assert receipt["pending_ack"] is False
+    module.sync_threadhall_once()
+    assert executed == []
+
+
+@pytest.mark.parametrize("disable_source", ["unpair", "authority_clear"])
+def test_failed_audio_stop_cannot_keep_old_claim_authority(module, monkeypatch, disable_source):
+    original_config = save_claim_threadhall_connection(module, {})
+    claim_started = threading.Event()
+    release_claim = threading.Event()
+    executed = []
+    errors = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("claim-before-disable")],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "claim-before-disable"):
+            claim_started.set()
+            assert release_claim.wait(3)
+            return claim_grant("claim-before-disable", payload={"sound_key": "passing"})
+        pytest.fail("A disabled authority must not ACK the old claim")
+
+    def run_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: (_ for _ in ()).throw(RuntimeError("player resisted STOP")))
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: executed.append(command))
+    worker = threading.Thread(target=run_sync, daemon=True)
+    worker.start()
+    try:
+        assert claim_started.wait(1)
+        with pytest.raises(module.HTTPException, match="reconciliation"):
+            if disable_source == "unpair":
+                module.unpair_threadhall()
+            else:
+                with module.threadhall_integration_lock:
+                    module.clear_threadhall_authority_state(
+                        module.load_threadhall_config(), "Authority mismatch",
+                    )
+        disabled = module.load_threadhall_config()
+        assert disabled["enabled"] is False
+        assert disabled["token"] == ""
+    finally:
+        release_claim.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert executed == []
+    receipt = module.load_threadhall_command_history(original_config)["claim-before-disable"]
+    assert receipt["claim_state"] == "claimed_after_authority_change"
+    assert receipt["pending_ack"] is False
+
+
+def test_failed_unpair_write_fences_managed_dispatch_and_sync(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    module.save_all_schedules({
+        "active": "Threadhall - Regular",
+        "schedules": {"Threadhall - Regular": []},
+    })
+    original_save = module.save_threadhall_config
+
+    def fail_disabled_save(updates):
+        if updates.get("enabled") is False:
+            raise OSError("directory fsync failed")
+        return original_save(updates)
+
+    monkeypatch.setattr(module, "save_threadhall_config", fail_disabled_save)
+    with pytest.raises(module.HTTPException, match="reconciliation"):
+        module.unpair_threadhall()
+    assert module.threadhall_authority_fence_failed is True
+    assert module.load_threadhall_config()["enabled"] is True
+    assert module.managed_schedule_clock_status()["reason"] == "threadhall_authority_reconciliation_required"
+
+    calls = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        calls.append(path)
+        assert path == "api/pibells/v1/sync"
+        assert set(payload) == {"protocol_version", "device_uuid", "sent_at", "capabilities", "telemetry"}
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "commands": [claim_sync_offer("must-not-claim")],
+        }
+
+    monkeypatch.setattr(module, "threadhall_sync_payload", lambda config: pytest.fail("fenced sync must use STOP-only payload"))
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    status = module.sync_threadhall_once()
+    assert calls == ["api/pibells/v1/sync"]
+    assert status["enabled"] is False
+    assert module.threadhall_authority_fence_failed is True
+    monkeypatch.setattr(module, "load_all_schedules", lambda: pytest.fail("managed dispatch must stop before schedule mutation"))
+    module.dispatch_due_events()
+    assert module.next_event_payload() is None
+
+
+def test_minimal_sync_poll_can_stop_audio_after_dashboard_disk_failure(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    monkeypatch.setattr(
+        module, "threadhall_sync_payload",
+        lambda config: (_ for _ in ()).throw(OSError("schedule normalization failed")),
+    )
+    monkeypatch.setattr(module, "load_all_schedules", lambda: pytest.fail("degraded STOP poll must not load schedules"))
+    monkeypatch.setattr(module, "apply_threadhall_schedules", lambda *a, **kw: pytest.fail("degraded poll must not publish"))
+    stopped = []
+    requests = []
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append((path, payload))
+        assert path == "api/pibells/v1/sync"
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "commands": [
+                {"id": "urgent-stop", "type": "STOP_AUDIO", "payload": {}},
+                claim_sync_offer("must-not-claim"),
+            ],
+            "schedules": ["malformed schedule must be ignored in degraded mode"],
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    status = module.sync_threadhall_once()
+    assert stopped == [True]
+    assert len(requests) == 1
+    assert set(requests[0][1]) == {"protocol_version", "device_uuid", "sent_at", "capabilities", "telemetry"}
+    assert requests[0][1]["capabilities"]["execution_claim_v1"] is True
+    assert requests[0][1]["telemetry"]["stop_only_poll"] is True
+    assert status["enabled"] is False
+    assert "only remote STOP" in status["last_error"]
+
+
+def test_sync_poll_survives_secondary_error_persistence_failure(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    attempted = []
+    slept = []
+
+    class FinishedProbe(Exception):
+        pass
+
+    def fail_sync(*, acknowledgements_in_background=False):
+        attempted.append(True)
+        raise OSError("sync could not read disk")
+
+    def fail_save(updates):
+        raise OSError("error state fsync failed")
+
+    def end_after_sleep(seconds):
+        slept.append(seconds)
+        raise FinishedProbe()
+
+    monkeypatch.setattr(module, "sync_threadhall_once", fail_sync)
+    monkeypatch.setattr(module, "save_threadhall_config", fail_save)
+    monkeypatch.setattr(module.time, "sleep", end_after_sleep)
+    with pytest.raises(FinishedProbe):
+        module.threadhall_sync_loop()
+    assert attempted == [True]
+    assert len(slept) == 1
+
+
+def test_local_stop_durably_holds_unseen_remote_play_until_repair(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    stopped = []
+    requests = []
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    module.stop_sound()
+    assert module.load_threadhall_config()["remote_command_hold"] is True
+    assert module.safe_threadhall_status()["remote_commands_held"] is True
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append((path, payload))
+        assert path == "api/pibells/v1/sync"
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "commands": [claim_sync_offer("unseen-old-play")],
+        }
+
+    monkeypatch.setattr(module, "threadhall_sync_payload", lambda config: pytest.fail("held sync must be STOP-only"))
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    status = module.sync_threadhall_once()
+    assert status["enabled"] is False
+    assert len(requests) == 1
+    assert requests[0][0] == "api/pibells/v1/sync"
+    assert requests[0][1]["telemetry"]["stop_only_poll"] is True
+    assert module.load_threadhall_command_history() == {}
+
+    def pair_request(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/pair"
+        return {
+            "token": "reconciled-token",
+            "authority": {
+                "district_id": "district-1",
+                "school_id": "school-1",
+                "device_id": "device-1",
+            },
+            **claim_pair_fields(module),
+            "device": {"id": "device-1"},
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", pair_request)
+    monkeypatch.setattr(module, "dashboard", lambda: {"active_schedule": "Default"})
+    monkeypatch.setattr(module, "get_local_ip", lambda: "127.0.0.1")
+    module.pair_threadhall(module.ThreadhallPairRequest(
+        base_url="https://threadhall.example.test", pairing_code="RECONCILE-STOP",
+    ))
+    assert module.load_threadhall_config()["remote_command_hold"] is False
+    assert module.safe_threadhall_status()["remote_commands_held"] is False
+
+
+@pytest.mark.parametrize("stop_source", ["local", "remote"])
+def test_stop_during_schedule_planning_prevents_late_bell(module, monkeypatch, stop_source):
+    if stop_source == "remote":
+        save_threadhall_connection(module, {})
+        monkeypatch.setattr(module, "threadhall_sync_payload", module.threadhall_stop_only_sync_payload)
+
+        def fake_request(config, path, *, method="GET", payload=None, token=None):
+            if path == "api/pibells/v1/sync":
+                return {
+                    "protocol_version": 1,
+                    "device": {"id": "device-1"},
+                    "commands": [{"id": "scheduled-stop", "type": "STOP_AUDIO", "payload": {}}],
+                }
+            assert path.endswith("scheduled-stop/ack")
+            return {"ok": True}
+
+        monkeypatch.setattr(module, "threadhall_request", fake_request)
+    else:
+        save_claim_threadhall_connection(module, {})
+    planned = threading.Event()
+    resume = threading.Event()
+    errors = []
+    played = []
+    instant = datetime.now().replace(second=0, microsecond=0)
+    event = SimpleNamespace(
+        enabled=True,
+        day=instant.weekday(),
+        time=instant.time(),
+        sound_file="passing.mp3",
+        output_keys=None,
+        id="due-now",
+    )
+
+    def delayed_schedule(now):
+        planned.set()
+        assert resume.wait(2)
+        return [event]
+
+    def run_dispatch():
+        try:
+            module.dispatch_due_events(instant)
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "load_schedule", delayed_schedule)
+    monkeypatch.setattr(module, "trigger_bell", lambda *a, **kw: played.append(True))
+    monkeypatch.setattr(module, "stop_loops", lambda: None)
+    worker = threading.Thread(target=run_dispatch, daemon=True)
+    worker.start()
+    try:
+        assert planned.wait(1)
+        if stop_source == "local":
+            module.stop_sound()
+        else:
+            module.sync_threadhall_once()
+    finally:
+        resume.set()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert errors == []
+    assert played == []
+
+
+def test_corrupt_pairing_file_stops_audio_and_uses_cached_stop_only_identity(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    stopped = []
+    requests = []
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    module.THREADHALL_CONFIG_FILE.write_text("{corrupt")
+    loaded = module.load_threadhall_config()
+    assert loaded["token"] == "test-device-token"
+    assert stopped == [True]
+    assert module.threadhall_config_integrity_failed is True
+    assert module.safe_threadhall_status()["enabled"] is False
+    with pytest.raises(module.HTTPException, match="pairing file"):
+        module.trigger_bell("passing.mp3")
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append((path, payload))
+        assert path == "api/pibells/v1/sync"
+        assert config["token"] == "test-device-token"
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "commands": [
+                {"id": "stop-after-corruption", "type": "STOP_AUDIO", "payload": {}},
+                claim_sync_offer("blocked-play"),
+            ],
+        }
+
+    monkeypatch.setattr(module, "threadhall_sync_payload", lambda config: pytest.fail("corrupt config must be STOP-only"))
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    with pytest.raises(module.HTTPException) as error:
+        module.sync_threadhall_once()
+    assert error.value.status_code == 503
+    assert len(stopped) >= 2
+    assert len(requests) == 1
+    assert requests[0][1]["telemetry"]["stop_only_poll"] is True
+
+
+def test_unreadable_pairing_without_cached_token_fails_closed(module, monkeypatch):
+    module.THREADHALL_CONFIG_FILE.mkdir()
+    stopped = []
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    with pytest.raises(module.HTTPException) as error:
+        module.load_threadhall_config()
+    assert error.value.status_code == 503
+    assert stopped == [True]
+    assert module.threadhall_config_integrity_failed is True
+
+
+def test_stop_between_offer_and_claim_dispatch_blocks_old_offer(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    requests = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append(path)
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("queued-before-stop")],
+            }
+        pytest.fail("STOP must prevent an older offer from seeking a claim")
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    _, config, identity, _, offers = module._sync_threadhall_once_before_acks()
+    assert len(offers) == 1
+    module.stop_sound()
+    assert module.process_threadhall_claim_offers(config, identity, offers) == []
+    assert requests == ["api/pibells/v1/sync"]
+    receipt = module.load_threadhall_command_history()["queued-before-stop"]
+    assert receipt["claim_state"] == "superseded_before_claim"
+    assert receipt["pending_ack"] is False
+
+
+def test_local_stop_during_sync_http_suppresses_late_play_offer(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    sync_started = threading.Event()
+    release_sync = threading.Event()
+    errors = []
+    requests = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append(path)
+        if path == "api/pibells/v1/sync":
+            sync_started.set()
+            assert release_sync.wait(3)
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("stale-http-offer")],
+            }
+        pytest.fail("A pre-STOP sync response must not seek a claim or ACK")
+
+    def run_sync():
+        try:
+            module.sync_threadhall_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    worker = threading.Thread(target=run_sync, daemon=True)
+    worker.start()
+    try:
+        assert sync_started.wait(1)
+        assert module.stop_sound() == {"status": "stopped"}
+    finally:
+        release_sync.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert requests == ["api/pibells/v1/sync"]
+    assert module.load_threadhall_command_history() == {}
+    assert module.load_threadhall_config()["remote_command_hold"] is True
+
+
+def test_remote_stop_runs_before_broken_receipt_disk_blocks_sync(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    stopped = []
+    acknowledgements = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [{"id": "urgent-stop", "type": "STOP_AUDIO", "payload": {}}],
+            }
+        acknowledgements.append(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    monkeypatch.setattr(
+        module, "load_threadhall_command_history",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("receipt disk unavailable")),
+    )
+
+    with pytest.raises(module.HTTPException) as error:
+        module.sync_threadhall_once()
+    assert error.value.status_code == 503
+    assert stopped == [True]
+    assert acknowledgements == []
+
+
+def test_remote_stop_precedes_invalid_schedule_bundle(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    stopped = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/sync"
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "schedules": [42],
+            "commands": [{"id": "stop-before-invalid-bundle", "type": "STOP_AUDIO", "payload": {}}],
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    with pytest.raises(module.HTTPException, match="invalid schedules"):
+        module.sync_threadhall_once()
+    assert stopped == [True]
+
+
+def test_remote_stop_fence_fsync_failure_still_stops_without_ack(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    stopped = []
+    acknowledgements = []
+    original_fsync = module.os.fsync
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [{"id": "durability-stop", "type": "STOP_AUDIO", "payload": {}}],
+            }
+        acknowledgements.append(path)
+        return {"ok": True}
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(module.os.fstat(fd).st_mode):
+            raise OSError("directory fsync unavailable")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    monkeypatch.setattr(module.os, "fsync", fail_directory_fsync)
+    with pytest.raises(module.HTTPException, match="ordering state could not be saved"):
+        module.sync_threadhall_once()
+    assert stopped == [True]
+    assert acknowledgements == []
+    assert module.threadhall_stop_runtime_generation == 1
+
+
+def test_background_claim_wait_does_not_delay_later_remote_stop(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    claim_started = threading.Event()
+    release_claim = threading.Event()
+    stopped = []
+    sync_count = 0
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        nonlocal sync_count
+        if path == "api/pibells/v1/sync":
+            sync_count += 1
+            commands = (
+                [claim_sync_offer("slow-claim")]
+                if sync_count == 1
+                else [{"id": "stop-during-claim", "type": "STOP_AUDIO", "payload": {}}]
+            )
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": commands,
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "slow-claim"):
+            claim_started.set()
+            assert release_claim.wait(3)
+            return {"ok": False, "execute": False}
+        if path == "api/pibells/v1/commands/stop-during-claim/ack":
+            assert "claim_id" not in payload
+            return {"ok": True}
+        pytest.fail(path)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: module.stop_loops() or "Stopped")
+    try:
+        module.sync_threadhall_once(acknowledgements_in_background=True)
+        assert claim_started.wait(1)
+        module.sync_threadhall_once()
+        assert stopped == [True]
+    finally:
+        release_claim.set()
+        assert module.threadhall_claim_worker_lock.acquire(timeout=2)
+        module.threadhall_claim_worker_lock.release()
+
+
+def test_v2_partial_action_error_keeps_physical_outcome_unknown(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    acknowledgements = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [claim_sync_offer("partial-output")],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "partial-output"):
+            return claim_grant("partial-output", payload={"sound_key": "passing"})
+        acknowledgements.append(payload)
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "run_threadhall_command", lambda command: (_ for _ in ()).throw(RuntimeError("one output failed")))
+    module.sync_threadhall_once()
+    module.sync_threadhall_once()
+
+    receipt = module.load_threadhall_command_history()["partial-output"]
+    assert receipt["claim_state"] == "execution_unknown"
+    assert receipt["pending_ack"] is False
+    assert receipt["claim_id"] == "00000000-0000-4000-8000-000000000001"
+    assert acknowledgements == []
+
+
+def test_v1_non_stop_is_quarantined_while_stop_remains_available(module, monkeypatch):
+    save_threadhall_connection(module, {})
+    stopped = []
+    acknowledgements = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            assert payload["protocol_version"] == 1
+            return {
+                "protocol_version": 1,
+                "device": {"id": "device-1"},
+                "commands": [
+                    {"id": "unsafe-play", "type": "PLAY_SOUND", "payload": {"sound_key": "passing"}},
+                    {"id": "urgent-stop", "type": "STOP_AUDIO", "payload": {}},
+                ],
+            }
+        acknowledgements.append((path, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    monkeypatch.setattr(module, "trigger_bell", lambda *args, **kwargs: pytest.fail("v1 play must not run"))
+    module.sync_threadhall_once()
+
+    assert stopped == [True]
+    assert module.load_threadhall_command_history()["unsafe-play"]["status"] == "failed"
+    assert len(acknowledgements) == 2
 
 
 def test_threadhall_records_unknown_outcome_before_physical_execution(
     module,
     monkeypatch,
 ):
-    save_threadhall_connection(module, {})
+    save_claim_threadhall_connection(module, {})
     sync_count = 0
     execution_attempts = []
     acknowledgements = []
@@ -1777,15 +3024,13 @@ def test_threadhall_records_unknown_outcome_before_physical_execution(
         if path == "api/pibells/v1/sync":
             sync_count += 1
             return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
                 "device": {"id": "device-1"},
-                "commands": [
-                    {
-                        "id": "interrupted-command",
-                        "type": "PLAY_SOUND",
-                        "payload": {"sound_key": "passing"},
-                    }
-                ] if sync_count == 1 else [],
+                "commands": [claim_sync_offer("interrupted-command")] if sync_count == 1 else [],
             }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "interrupted-command"):
+            return claim_grant("interrupted-command", payload={"sound_key": "passing"})
         if path == "api/pibells/v1/commands/interrupted-command/ack":
             acknowledgements.append(payload)
             return {"ok": True}
@@ -1804,17 +3049,14 @@ def test_threadhall_records_unknown_outcome_before_physical_execution(
     pending = module.load_threadhall_command_history()["interrupted-command"]
     assert pending["status"] == "failed"
     assert pending["detail"] == {"execution_outcome_unknown": True}
-    assert pending["pending_ack"] is True
+    assert pending["pending_ack"] is False
+    assert pending["claim_state"] == "execution_unknown"
+    assert pending["claim_id"] == "00000000-0000-4000-8000-000000000001"
 
     module.sync_threadhall_once()
 
     assert execution_attempts == ["interrupted-command"]
-    assert acknowledgements == [{
-        "status": pending["status"],
-        "summary": pending["summary"],
-        "detail": pending["detail"],
-        "occurred_at": pending["occurred_at"],
-    }]
+    assert acknowledgements == []
     assert module.load_threadhall_command_history()["interrupted-command"]["pending_ack"] is False
 
 
@@ -1827,17 +3069,20 @@ def test_threadhall_restart_refuses_commands_when_outcome_history_is_unavailable
     monkeypatch,
     damage,
 ):
-    save_threadhall_connection(module, {})
+    save_claim_threadhall_connection(module, {})
     attempts = []
-    command = {
-        "id": "possibly-played-command",
-        "type": "PLAY_SOUND",
-        "payload": {"sound_key": "passing"},
-    }
+    command = claim_sync_offer("possibly-played-command")
 
     def first_request(config, path, *, method="GET", payload=None, token=None):
         if path == "api/pibells/v1/sync":
-            return {"device": {"id": "device-1"}, "commands": [command]}
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [command],
+            }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", command["id"]):
+            return claim_grant(command["id"], payload={"sound_key": "passing"})
         pytest.fail("The interrupted command must not be acknowledged yet")
 
     def interrupted_execution(offered):
@@ -1864,11 +3109,26 @@ def test_threadhall_restart_refuses_commands_when_outcome_history_is_unavailable
     damaged_bytes = history_path.read_bytes() if history_path.exists() else None
 
     restarted = importlib.reload(module)
-    monkeypatch.setattr(
-        restarted,
-        "threadhall_request",
-        lambda *args, **kwargs: pytest.fail("Unsafe history must stop sync before network"),
-    )
+    requests = []
+    stopped = []
+
+    def stop_only_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append(path)
+        assert path == "api/pibells/v1/sync"
+        assert config["token"] == "test-device-token"
+        assert payload["telemetry"]["stop_only_poll"] is True
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "commands": [
+                {"id": "stop-despite-history", "type": "STOP_AUDIO", "payload": {}},
+                command,
+            ],
+        }
+
+    monkeypatch.setattr(restarted, "threadhall_request", stop_only_request)
+    monkeypatch.setattr(restarted, "stop_loops", lambda: stopped.append(True))
     monkeypatch.setattr(
         restarted,
         "run_threadhall_command",
@@ -1892,7 +3152,9 @@ def test_threadhall_restart_refuses_commands_when_outcome_history_is_unavailable
             restarted.sync_threadhall_once()
 
     assert exc_info.value.status_code == 503
-    assert "physical commands are paused" in str(exc_info.value.detail)
+    assert "physical commands are paused" in str(exc_info.value.detail).lower()
+    assert requests == ["api/pibells/v1/sync"]
+    assert stopped == [True]
     assert attempts == [command["id"]]
     assert (history_path.read_bytes() if history_path.exists() else None) == damaged_bytes
 
@@ -1902,7 +3164,7 @@ def test_threadhall_retries_a_durable_outcome_after_the_command_is_withdrawn(
     monkeypatch,
 ):
     (module.AUDIO_DIR / "bell-passing-classic.mp3").write_bytes(b"fake mp3")
-    save_threadhall_connection(module, {
+    save_claim_threadhall_connection(module, {
         "enabled": True,
         "base_url": "https://threadhall.example.test",
         "token": "pbv1.device-1.test-token-value",
@@ -1917,15 +3179,13 @@ def test_threadhall_retries_a_durable_outcome_after_the_command_is_withdrawn(
         if path == "api/pibells/v1/sync":
             sync_count += 1
             return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
                 "device": {"id": "device-1"},
-                "commands": [
-                    {
-                        "id": "command-withdrawn",
-                        "type": "PLAY_SOUND",
-                        "payload": {"sound_key": "passing"},
-                    }
-                ] if sync_count == 1 else [],
+                "commands": [claim_sync_offer("command-withdrawn")] if sync_count == 1 else [],
             }
+        if path == module.THREADHALL_CLAIM_URL_TEMPLATE.replace("{command_id}", "command-withdrawn"):
+            return claim_grant("command-withdrawn", payload={"sound_key": "passing"})
         if path == "api/pibells/v1/commands/command-withdrawn/ack":
             acknowledgement_attempts.append(payload)
             if len(acknowledgement_attempts) == 1:
@@ -2331,7 +3591,7 @@ def test_trigger_bell_starts_barix_and_local_outputs(module, monkeypatch):
         def kill(self):
             pass
 
-    def fake_popen(cmd, stdout=None, stderr=None):
+    def fake_popen(cmd, stdout=None, stderr=None, **kwargs):
         commands.append(cmd)
         return FakeProcess()
 
@@ -2347,6 +3607,324 @@ def test_trigger_bell_starts_barix_and_local_outputs(module, monkeypatch):
     assert stream_command.index("-i") < stream_command.index("-muxpreload")
     assert "+nobuffer" not in stream_command
     assert any(cmd[0] in {"ffplay", "bash"} for cmd in commands)
+
+
+def test_stop_audio_terminates_ordinary_local_and_barix_playback(module, monkeypatch):
+    (module.AUDIO_DIR / "bell.mp3").write_bytes(b"fake mp3")
+    module.save_devices([module.Device(ip="192.168.1.10", name="Gym", port=3030)])
+    processes = []
+
+    class FakeProcess:
+        stderr = None
+
+        def __init__(self):
+            self.done = threading.Event()
+            self.terminated = False
+
+        def poll(self):
+            return 0 if self.done.is_set() else None
+
+        def terminate(self):
+            self.terminated = True
+            self.done.set()
+
+        def kill(self):
+            self.done.set()
+
+        def wait(self, timeout=None):
+            if not self.done.wait(timeout):
+                raise module.subprocess.TimeoutExpired("fake audio", timeout)
+            return 0
+
+    def fake_popen(cmd, stdout=None, stderr=None, **kwargs):
+        assert kwargs["start_new_session"] is True
+        proc = FakeProcess()
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
+    module.trigger_bell("bell.mp3")
+    assert len(module.active_audio_processes) == 2
+
+    summary = module.run_threadhall_command({"type": "STOP_AUDIO", "payload": {}})
+
+    assert summary == "Stopped active audio"
+    assert all(proc.terminated for proc in processes)
+    assert module.active_audio_processes == []
+
+
+def test_reaper_drops_group_handle_after_child_group_exits(module, monkeypatch):
+    (module.AUDIO_DIR / "bell.mp3").write_bytes(b"fake mp3")
+    reaper_waited = threading.Event()
+    group_live = [True]
+
+    class FakeProcess:
+        stderr = None
+        pid = 34567
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            reaper_waited.set()
+            return 0
+
+    proc = FakeProcess()
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(module, "audio_group_alive", lambda group_id: group_live[0])
+    module.trigger_bell("bell.mp3", output_keys=["local"])
+    assert reaper_waited.wait(1)
+    assert proc in module.active_audio_processes
+    assert module.audio_process_groups[id(proc)] == proc.pid
+
+    group_live[0] = False
+    deadline = module.time.monotonic() + 1
+    while proc in module.active_audio_processes and module.time.monotonic() < deadline:
+        module.time.sleep(0.02)
+    assert proc not in module.active_audio_processes
+    assert id(proc) not in module.audio_process_groups
+
+
+def test_unverified_stop_has_no_ack_and_retries_on_server_reoffer(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    acknowledgements = []
+
+    class ResistantProcess:
+        def __init__(self):
+            self.done = threading.Event()
+            self.allow_stop = False
+            self.attempts = 0
+
+        def poll(self):
+            return 0 if self.done.is_set() else None
+
+        def terminate(self):
+            self.attempts += 1
+            if self.allow_stop:
+                self.done.set()
+
+        def kill(self):
+            self.attempts += 1
+            if self.allow_stop:
+                self.done.set()
+
+        def wait(self, timeout=None):
+            if not self.done.wait(timeout):
+                raise module.subprocess.TimeoutExpired("resistant audio", timeout)
+            return 0
+
+    proc = ResistantProcess()
+    module.active_audio_processes.append(proc)
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [{"id": "stop-retry", "type": "STOP_AUDIO", "payload": {}}],
+            }
+        if path == "api/pibells/v1/commands/stop-retry/ack":
+            acknowledgements.append(payload)
+            return {"ok": True}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    module.sync_threadhall_once()
+    unresolved = module.load_threadhall_command_history()["stop-retry"]
+    assert unresolved["stop_retry_pending"] is True
+    assert unresolved["pending_ack"] is False
+    assert module.load_threadhall_config()["unverified_stop_hold"] is True
+    assert acknowledgements == []
+    assert proc in module.active_audio_processes
+
+    proc.allow_stop = True
+    module.sync_threadhall_once()
+    assert proc.attempts >= 2
+    assert module.active_audio_processes == []
+    assert [ack["status"] for ack in acknowledgements] == ["acknowledged"]
+    assert module.load_threadhall_config()["unverified_stop_hold"] is False
+
+
+def test_unverified_stop_blocks_later_play_without_reoffer_after_restart(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    module.save_threadhall_command_history({
+        "unverified-stop": {
+            "status": "failed",
+            "summary": "Physical termination could not be verified",
+            "detail": {"termination_unverified": True},
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "pending_ack": False,
+            "stop_retry_pending": True,
+        },
+    })
+    # The receipt alone must retain the hold even if the separate config
+    # write failed before a controller restart.
+    module.save_threadhall_config({"unverified_stop_hold": False})
+    restarted = importlib.reload(module)
+    requests = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append(path)
+        assert path == "api/pibells/v1/sync", "No claim or ACK is safe while STOP is unresolved"
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "commands": [claim_sync_offer("later-play")],
+        }
+
+    monkeypatch.setattr(restarted, "threadhall_request", fake_request)
+    monkeypatch.setattr(restarted, "run_threadhall_command", lambda command: pytest.fail("Unverified STOP must block playback"))
+    restarted.sync_threadhall_once()
+    assert requests == ["api/pibells/v1/sync"]
+    assert restarted.load_threadhall_command_history()["later-play"]["claim_state"] == "held_after_unverified_stop"
+    assert restarted.safe_threadhall_status()["enabled"] is False
+
+
+def test_expired_stop_with_unverified_termination_remains_durable_hold(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    acknowledgements = []
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        if path == "api/pibells/v1/sync":
+            return {
+                "protocol_version": 2,
+                "execution_claim_v1": True,
+                "device": {"id": "device-1"},
+                "commands": [{
+                    "id": "expired-stop",
+                    "type": "STOP_AUDIO",
+                    "payload": {},
+                    "expires_at": "2020-01-01T00:00:00+00:00",
+                }],
+            }
+        acknowledgements.append(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    monkeypatch.setattr(module, "stop_loops", lambda: (_ for _ in ()).throw(RuntimeError("speaker still active")))
+    module.sync_threadhall_once()
+    receipt = module.load_threadhall_command_history()["expired-stop"]
+    assert receipt["stop_retry_pending"] is True
+    assert receipt["pending_ack"] is False
+    assert module.load_threadhall_config()["unverified_stop_hold"] is True
+    assert acknowledgements == []
+
+
+def test_verified_repair_pair_clears_unverified_stop_receipts(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    module.save_threadhall_command_history({
+        "old-stop": {
+            "status": "failed",
+            "summary": "Termination unverified",
+            "detail": {"termination_unverified": True},
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "pending_ack": False,
+            "stop_retry_pending": True,
+        },
+    })
+    module.save_threadhall_config({"unverified_stop_hold": True})
+    monkeypatch.setattr(module, "stop_loops", lambda: None)
+    monkeypatch.setattr(module, "dashboard", lambda: {"active_schedule": "Default"})
+    monkeypatch.setattr(module, "get_local_ip", lambda: "127.0.0.1")
+
+    def fake_pair(config, path, *, method="GET", payload=None, token=None):
+        assert path == "api/pibells/v1/pair"
+        return {
+            "token": "reconciled-token",
+            "authority": {
+                "district_id": "district-1",
+                "school_id": "school-1",
+                "device_id": "device-1",
+            },
+            **claim_pair_fields(module),
+            "device": {"id": "device-1"},
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_pair)
+    module.pair_threadhall(module.ThreadhallPairRequest(
+        base_url="https://threadhall.example.test", pairing_code="RECONCILE-UNVERIFIED-STOP",
+    ))
+    assert module.load_threadhall_config()["unverified_stop_hold"] is False
+    assert module.load_threadhall_command_history()["old-stop"]["stop_retry_pending"] is False
+    assert module.safe_threadhall_status()["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    ("requested_stop_only", "hold_code"),
+    [
+        (True, "PIBELLS_STOP_ONLY_POLL"),
+        (False, "PIBELLS_CURRENT_SCHOOL_YEAR_INVALID"),
+    ],
+)
+def test_server_held_v2_response_without_claim_capability_still_stops(
+    module, monkeypatch, requested_stop_only, hold_code,
+):
+    save_claim_threadhall_connection(module, {})
+    stopped = []
+    requests = []
+    if requested_stop_only:
+        monkeypatch.setattr(
+            module, "threadhall_sync_payload",
+            lambda config: (_ for _ in ()).throw(OSError("dashboard unavailable")),
+        )
+    else:
+        monkeypatch.setattr(module, "threadhall_sync_payload", lambda config: {"telemetry": {}})
+    monkeypatch.setattr(module, "stop_loops", lambda: stopped.append(True))
+    monkeypatch.setattr(
+        module, "claim_and_execute_threadhall_offer",
+        lambda *args, **kwargs: pytest.fail("A held response must not claim PLAY"),
+    )
+
+    def fake_request(config, path, *, method="GET", payload=None, token=None):
+        requests.append((path, payload))
+        assert path == "api/pibells/v1/sync"
+        assert (payload["telemetry"].get("stop_only_poll") is True) is requested_stop_only
+        return {
+            "protocol_version": 2,
+            "execution_claim_v1": False,
+            "device": {"id": "device-1"},
+            "schedule_publication": {"status": "HELD", "code": hold_code},
+            "commands": [
+                {"id": "safe-stop", "type": "STOP_AUDIO", "payload": {}},
+                claim_sync_offer("must-not-claim"),
+            ],
+        }
+
+    monkeypatch.setattr(module, "threadhall_request", fake_request)
+    status = module.sync_threadhall_once()
+    assert stopped == [True]
+    assert status["enabled"] is False
+    assert len(requests) == 1
+    assert module.load_threadhall_command_history() == {}
+
+
+def test_contradictory_server_stop_only_capability_never_claims_play(module, monkeypatch):
+    save_claim_threadhall_connection(module, {})
+    monkeypatch.setattr(module, "threadhall_sync_payload", lambda config: {"telemetry": {}})
+    monkeypatch.setattr(
+        module, "claim_and_execute_threadhall_offer",
+        lambda *args, **kwargs: pytest.fail("Held publication cannot claim PLAY"),
+    )
+    monkeypatch.setattr(
+        module, "threadhall_request",
+        lambda *args, **kwargs: {
+            "protocol_version": 2,
+            "execution_claim_v1": True,
+            "device": {"id": "device-1"},
+            "schedule_publication": {
+                "status": "HELD",
+                "code": "PIBELLS_CURRENT_SCHOOL_YEAR_INVALID",
+            },
+            "commands": [claim_sync_offer("must-not-claim")],
+        },
+    )
+
+    status = module.sync_threadhall_once()
+    assert status["enabled"] is False
+    assert status["execution_claim_v1"] is False
+    assert module.load_threadhall_command_history() == {}
 
 
 def test_trigger_bell_reports_ffmpeg_startup_failure(module, monkeypatch):
@@ -2366,7 +3944,7 @@ def test_trigger_bell_reports_ffmpeg_startup_failure(module, monkeypatch):
     monkeypatch.setattr(
         module.subprocess,
         "Popen",
-        lambda cmd, stdout=None, stderr=None: FailedProcess(),
+        lambda cmd, stdout=None, stderr=None, **kwargs: FailedProcess(),
     )
 
     with pytest.raises(RuntimeError, match="Audio stream failed to start: Invalid argument"):
@@ -2404,7 +3982,7 @@ def test_mixed_stream_startup_failure_cleans_started_processes(module, monkeypat
 
     started = StartedProcess()
 
-    def fake_popen(cmd, stdout=None, stderr=None):
+    def fake_popen(cmd, stdout=None, stderr=None, **kwargs):
         if any("udp://192.168.1.11:3030" in part for part in cmd):
             raise OSError("simulated second output failure")
         return started
@@ -2450,7 +4028,7 @@ def test_loop_local_start_failure_rolls_back_started_stream(module, monkeypatch)
 
     stream = StartedProcess()
 
-    def fake_popen(cmd, stdout=None, stderr=None):
+    def fake_popen(cmd, stdout=None, stderr=None, **kwargs):
         if any("udp://192.168.1.10:3030" in part for part in cmd):
             return stream
         raise OSError("simulated local player failure")
@@ -2489,7 +4067,7 @@ def test_targeted_trigger_starts_only_selected_outputs(module, monkeypatch):
     monkeypatch.setattr(
         module.subprocess,
         "Popen",
-        lambda cmd, stdout=None, stderr=None: commands.append(cmd) or FakeProcess(),
+        lambda cmd, stdout=None, stderr=None, **kwargs: commands.append(cmd) or FakeProcess(),
     )
 
     module.trigger_bell(
@@ -2520,7 +4098,7 @@ def test_targeted_barix_output_does_not_start_local_playback(module, monkeypatch
     monkeypatch.setattr(
         module.subprocess,
         "Popen",
-        lambda cmd, stdout=None, stderr=None: commands.append(cmd) or FakeProcess(),
+        lambda cmd, stdout=None, stderr=None, **kwargs: commands.append(cmd) or FakeProcess(),
     )
 
     module.trigger_bell("bell.mp3", output_keys=["192.168.1.10:3030"])
